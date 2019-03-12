@@ -62,7 +62,7 @@ void function_entry(int threadId, const std::string* name) {
     }
     functraces[index].push_back(*name);
     logger::debug("thread id: %d, enter function: %s\n", threadId, name->c_str());
-    logger::info("F\tenter\t%s\n", name->c_str());
+    logger::info("enter\t%s\n", name->c_str());
     // printTrace(index);
 }
 
@@ -81,7 +81,7 @@ void function_exit(int threadId, const std::string* name) {
     functraces[index].pop_back();
     
     logger::debug("thread id: %d, exit  function: %s\n", threadId, name->c_str());
-    logger::info("F\texit\t%s\n", name->c_str());
+    logger::info("exit\t%s\n", name->c_str());
         // printTrace(index);
     if (*name == start_entry) monitor::end();
 }

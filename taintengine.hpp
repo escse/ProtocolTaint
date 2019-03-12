@@ -369,6 +369,12 @@ public:
             return shift_ + size_;
         }
 
+        size_t regSize() {
+            const static size_t table[5] = {8, 4, 2, 1, 1};
+            size_t regsize = table[index_ % 5];
+            return regsize;
+        }
+
         const char *name() {
             return regNames[index_];
         }
@@ -408,20 +414,19 @@ public:
             bigendian_ = b;
         }
 
-        inline uint64_t src() {
-            return src_;
+        inline uint64_t src() { // fix offset bug when ref AL
+            int diff = size_ + 1 - regSize();
+            if (diff <= 0) return src_;
+            return src_ + diff;
         }
         
         inline size_t offset() {
-            if (offset_ == 0) {
-                offset_ = inits.offset(src_);
-            }
+            offset_ = inits.offset(src());
             return offset_;
         }
 
         size_t size() {
-            const static size_t table[5] = {8, 4, 2, 1, 1};
-            size_t regsize = table[index_ % 5];
+            size_t regsize = regSize();
             size_t size = size_ + 1;
             if (regsize < size) {
                 logger::print("%s reg size unmatch, reg size %lx, size %lx\n", name(), regsize, size);
@@ -435,7 +440,7 @@ public:
             if (s > size()) {
                 logger::print("reg %s size overflow in value: size %lx, input size %lx\n", name(), size(), s);
             }
-            uint64_t ret = inits.value(src_, s, bigendian_);
+            uint64_t ret = inits.value(src(), s, bigendian_);
             if (shift_ > 0) {
                 ret <<= 8 * shift_;
             } else if (shift_ < 0) {
@@ -476,7 +481,7 @@ public:
 
         const char *debug() {
             static char buf[256];
-            int n = sprintf(buf, "register %s:\tsrc: %lx, size: %lx, offset: %lx, bigendian: %d, value: %lx, shift: %d\n", name(), src_, size(), offset(), bigendian_, value(), shift_);
+            int n = sprintf(buf, "register %s:\tsrc: %lx, size: %lx, offset: %lx, bigendian: %d, value: %lx, shift: %d\n", name(), src(), size(), offset(), bigendian_, value(), shift_);
             buf[n] = 0;
             return buf;
         }
@@ -560,6 +565,14 @@ const char *offsets(uint64_t addr) {
     return mems.offsets(addr);
 }
 
+uint64_t value(REG reg, size_t size = 0) {
+    return regs.value(reg, size);
+}
+
+uint64_t value(uint64_t addr, size_t size = 0) {
+    return mems.value(addr, size);
+}
+
 const char *debug(REG reg) {
     return regs.debug(reg);
 }
@@ -623,7 +636,7 @@ void move(uint64_t addr, REG id, size_t size) {
 void move(uint64_t w, uint64_t r, size_t size) {
     Memory::MemT &mem_w = mems.get(w, true);
     Memory::MemT &mem_r = mems.get(r);
-    if (!inits.valid(r)) {
+    if (!inits.valid(r)) { // original source address's size come from input size
         size = min(size, mem_r.size());
     }
     mem_w.taint(mem_r.src(), size, mem_r.isBigendian());
