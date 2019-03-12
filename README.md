@@ -9,3 +9,5 @@ ProtocolTaint通过代码动态分析的方法对二进制协议可执行文件�
 ### 结果
 以二进制协议modbus作为简单测试例子，结果如下图
 ![结果](https://github.com/escse/ProtocolTaint/blob/master/graph.png)
+
+可以从中总结出字段[00 01]{02 03 04 05}[06][07][08 09][10 11]
