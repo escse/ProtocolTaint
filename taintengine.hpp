@@ -465,7 +465,13 @@ public:
         }
 
         void rshift(int8_t s) {
-            shift_ -= s / 8; // modify minus
+            s /= 8;
+            shift_ = max(shift_ - s, 0);
+            size_  = max(size_  - s, 0);
+            if (!bigendian_) {
+                src_ += s;
+                offset_ += s;
+            }
         }
 
         const char *debug() {
