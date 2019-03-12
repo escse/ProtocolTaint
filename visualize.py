@@ -97,24 +97,23 @@ cur_f = root
 cur_d = DataNode()
 for line in lines:
     content = line.strip().split('\t')
-    if content[0] == "F":
-        name = content[2]
-        if content[1] == "enter":
-            node = FuncNode(name)
-            if not cur_d.empty():
-                cur_f.add(cur_d)
-                cur_d = DataNode()
-            cur_f.add(node)
-            cur_f = node
-        elif content[1] == "exit":
-            if not cur_d.empty():
-                cur_f.add(cur_d)
-                cur_d = DataNode()
-            cur_f = cur_f.parent
+    tag = content[0]
+    data = content[1]
+    if tag == "enter":
+        node = FuncNode(data)
+        if not cur_d.empty():
+            cur_f.add(cur_d)
+            cur_d = DataNode()
+        cur_f.add(node)
+        cur_f = node
+    elif tag == "exit":
+        if not cur_d.empty():
+            cur_f.add(cur_d)
+            cur_d = DataNode()
+        cur_f = cur_f.parent
 
-    elif content[0][0] == "T":
-        addr = content[2].split(",")
-        cur_d.add(addr)
+    elif tag.startswith("Instruction"):
+        cur_d.add(data.split(","))
 
 # root.cont()
 graph = pydot.Dot(graph_type='graph')
