@@ -29,6 +29,7 @@ inline void end() {
 } // monitor namespace end
 
 namespace logger {
+    const bool isFlush = true;
     bool _debug = false;
     FILE *_dout = stdout;
     bool _verbose = false;
@@ -47,6 +48,7 @@ namespace logger {
         va_start(arg, fmt);
         vfprintf(_dout, fmt, arg);
         va_end(arg);
+        if (isFlush) fflush(_dout);
     }
 
     void verbose(const char *fmt, ...) {
@@ -55,6 +57,7 @@ namespace logger {
         va_start(arg, fmt);
         vfprintf(_vout, fmt, arg);
         va_end(arg);
+        if (isFlush) fflush(_vout);
     }
 
     void info(const char *fmt, ...) {
@@ -63,6 +66,7 @@ namespace logger {
         va_start(arg, fmt);
         vfprintf(_iout, fmt, arg);
         va_end(arg);
+        if (isFlush) fflush(_iout);
     }
 
     void print(const char *fmt, ...) {
@@ -70,6 +74,7 @@ namespace logger {
         va_start(arg, fmt);
         vfprintf(stdout, fmt, arg);
         va_end(arg);
+        if (isFlush) fflush(stdout);
     }
 
     void printline(const unsigned char *start, size_t size) {
