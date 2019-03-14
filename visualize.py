@@ -1,4 +1,6 @@
 import pydot
+from collections import OrderedDict
+
 
 with open("info.txt", "r") as f:
     lines = f.readlines()
@@ -7,10 +9,9 @@ with open("info.txt", "r") as f:
 def fold(s, n, maxline=3):
     ret = []
     size = len(s)
-    line = (size - 1)// n + 1
-    if line >= maxline:
-        n = (size - 1) // maxline + 1
-        line = maxline
+    if size <= n: return s
+    line = min(maxline, (size - 1)// n + 1)
+    n = (size - 1) // line + 1
     for i in range(line):
         ret.append(s[n * i : n * (i+1)])
         ret.append("\n")
@@ -38,10 +39,6 @@ class Node(object):
 
     def __len__(self):
         return len(self.children)
-
-    def add(self, c):
-        c.parent = self
-        self.children.append(c)
     
     def construct(self, graph):    
         for child in self.children:
@@ -60,9 +57,17 @@ class FuncNode(Node):
     def name(self):
         return fold(self.name_, 12)
 
+    def add(self, c):
+        c.parent = self
+        self.children.append(c)
+
     def trim(self):
         self.children = [c for c in self.children if c.trim()]
         return len(self.children) > 0
+    
+    def collect(self, container):
+        for c in self.children:
+            c.collect(container)
 
 
 class DataNode(Node):
@@ -72,7 +77,7 @@ class DataNode(Node):
         self.data = []
 
     def name(self):
-        return fold(str(self.data).replace('\'', '')[1:-1], 12)
+        return fold(str(self.data)[1:-1], 12)
 
     def empty(self):
         return not self.data
@@ -83,18 +88,74 @@ class DataNode(Node):
     def add(self, c):
         size = len(c)
         if not size: return
-        if size == 1:
-            if not self.data or self.data[-1] != c[0]:
-                self.data.append(c[0])
-        else:
-            while self.data and (self.data[-1] in c or self.data[-1] == c):
-                self.data.pop()
+        if size == 1: c = c[0]
+        if c not in self.data:
             self.data.append(c)
+
+    def collect(self, container):
+        container.append(self.data)
+
+
+class MemoryBlock:
+
+    def __init__(self):
+        self.container = OrderedDict()
+        self.max = None
+        self.min = None
+        self.thres = 0x40
     
+    def valid(self, addr):
+        return addr >= self.min - self.thres and addr <= self.max + self.thres
+    
+    def add(self, addr, offset, size):
+        if not self.max or addr + size - 1 > self.max:
+            self.max = addr + size -1
+        if not self.min or addr < self.min:
+            self.min = addr        
+        while size > 0:
+            self.container[addr] = offset
+            addr += 1
+            offset += 1
+            size -= 1
+    
+    def remove(self, addr, size):
+        while size > 0:
+            del self.container[addr]
+            addr += 1
+            size -= 1
+    
+    def snapshot(self):
+        for k, v in self.container.items():
+            print(k, v)
+
+
+class Memory:
+
+    def __init__(self):
+        self.container = []
+
+    def index(self, addr):
+        for c in self.container:
+            if c.valid(addr): return c
+        self.container.append(MemoryBlock())
+        return self.container[-1]
+
+    def add(self, addr, offset, size):
+        self.index(addr).add(addr, offset, size)
+
+    def remove(self, addr, size):
+        self.index(addr).remove(addr, size)
+
+    def snapshot(self):
+        for c in self.container:
+            c.snapshot()
+
 
 root = FuncNode("")
 cur_f = root
 cur_d = DataNode()
+memory = Memory()
+
 for line in lines:
     content = line.strip().split('\t')
     tag = content[0]
@@ -111,14 +172,27 @@ for line in lines:
             cur_f.add(cur_d)
             cur_d = DataNode()
         cur_f = cur_f.parent
-
     elif tag.startswith("Instruction"):
-        cur_d.add(data.split(","))
+        cur_d.add([int(c) for c in data.split(",")])
+    elif tag.startswith("Memory"):
+        addr = int(content[2].split(":")[1], 16)
+        src = int(content[3].split(":")[1], 16)
+        offset = int(content[4].split(":")[1], 16)
+        size = int(content[5].split(":")[1], 16)
+        bigendian = int(content[6].split(":")[1])
+        if data == "Taint":
+            memory.add(addr, offset, size)
+        elif data == "Untaint":
+            memory.remove(addr, size)
 
-# root.cont()
+
 graph = pydot.Dot(graph_type='graph')
 root.trim()
 root = root[0]
 graph.add_node(pydot.Node(root.id(), label=root.name()))
 root.construct(graph)
 graph.write_png('graph.png')
+memory.snapshot()
+container = []
+root.collect(container)
+print(container)

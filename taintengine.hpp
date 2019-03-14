@@ -47,7 +47,7 @@ private:
                 case 8:     break;
                 default:    logger::print("length unexpected: pos: %lx, len: %lx, size: %lx\n", pos, len, size);
             }
-            if (bigendian) value = swap_(value, len);
+            if (bigendian) value = util::swap(value, len);
             return value;
         }
     };
@@ -58,7 +58,7 @@ private:
         for (size_t i = 0; i < inits.size(); ++i) { // merge continuous taint memory
             if (inits[i].valid(start)) {
                 int offset = start - inits[i].start;
-                ValueCopy(inits[i].bytes + offset, start, size);
+                util::ValueCopy(inits[i].bytes + offset, start, size);
                 logger::printline(inits[i].bytes, inits[i].size);
             }
         }
@@ -84,7 +84,7 @@ public:
 
     // use in exit entry function
     void taint(uint64_t start, size_t size) {
-        logger::print("start: %lx, size: %lx, len: %lx\n", start, size, inits.size());
+        logger::print("start: %lx, size: %lx\n", start, size);
         for (size_t i = 0; i < inits.size(); ++i) { // merge continuous taint memory
             if (start == inits[i].begin()) {
                 inits[i].size = size; // TODO
@@ -209,7 +209,6 @@ public:
         if (init) {
             // MemT e; // fuck
             memories[addr] = MemT();
-            // memories.insert(std::pair<uint64_t, MemT>(addr, MemT()));
             return memories[addr];
         }
         logger::print("memory invalid addr: %lx\n", addr);
@@ -228,6 +227,7 @@ public:
     }
 
     void taint(uint64_t addr, uint64_t src, size_t size, bool bigendian) {
+        logger::info("Memory:\tTaint\taddr:%lx\tsrc:%lx\toffset:%lx\tsize:%lx\tbigendian:%d\n", addr, src, inits.offset(src), size, bigendian);
         if (size > 1 && (size & 0x01)) {
             logger::print("unexpected size in memory taint: %lx\n", size);
         }
@@ -239,7 +239,13 @@ public:
     }
 
     void untaint(uint64_t addr) {
-        size_t size = get(addr).size();
+        MemT& mem = get(addr);
+        uint64_t src  = mem.src();
+        size_t size   = mem.size();
+        size_t offset = mem.offset();
+        bool bigendian = mem.isBigendian();
+
+        logger::info("Memory:\tUntaint\taddr:%lx\tsrc:%lx\toffset:%lx\tsize:%lx\tbigendian:%d\n", addr, src, offset, size, bigendian);
         size_t n = 0;
         while (size > n) {
             get(addr + n).untaint();
@@ -265,7 +271,7 @@ public:
     
     const char *offsets(uint64_t addr) {
         MemT &mem = get(addr);
-        return nums(mem.offset(), mem.size());
+        return util::nums(mem.offset(), mem.size());
     }
 
     const char *debug(uint64_t addr) {
@@ -501,7 +507,13 @@ public:
     }
 
     void taint(REG id, uint64_t src, size_t size, bool bigendian, int shift) {
-        get(id).taint(src, size, bigendian, shift);
+        int index = get(id).index();
+        index -= index % 5;
+        for (int i = 0; i < 5; ++i) {
+            id = reglists[index + i];
+            if (id == 0) continue;
+            get(id).taint(src, size, bigendian, shift);
+        }
     }
 
     void untaint(REG id) {
@@ -528,10 +540,24 @@ public:
     uint64_t value(REG id, size_t size = 0) {
         return get(id).value(size);
     }
+
+    void shift(REG id, int offset) {
+        int index = get(id).index() / 5 * 5;
+        for (int i = 0; i < 5; ++i) {
+            id = reglists[index + i];
+            if (id == 0) continue;
+            RegT &reg = get(id);
+            if (offset >= 0) {
+                reg.lshift(offset);
+            } else {
+                reg.rshift(-offset);
+            }
+        }
+    }
     
     const char *offsets(REG id) {
         RegT &reg = get(id);
-        return nums(reg.offset(), reg.size());
+        return util::nums(reg.offset(), reg.size());
     }
 
     const char *debug(REG id) {
@@ -541,13 +567,13 @@ public:
 private:
     
     RegT empty;
-    // RegT regs[REG_LAST];
+    // RegT registers[REG_LAST];
     std::map<REG, RegT> registers;
 };
 
 Register regs;
 
-// API
+// Wrapper API
 
 bool isTainted(REG reg) {
     return regs.isTainted(reg);
@@ -599,47 +625,34 @@ void Init(size_t start, size_t size) {
 
 // move
 void move(REG w, REG r) {
-    int index = regs.get(w).index() / 5 * 5;
-    for (int i = 0; i < 5; ++i) {
-        REG id = reglists[index + i]; 
-        if (id == 0) continue;
-        regs.get(id).copy(regs.get(r));
-    }
+    Register::RegT &reg = regs.get(r);
+    regs.taint(w, reg.src(), reg.size(), reg.isBigendian(), reg.shift());
 }
 
 
 void move(REG id, uint64_t addr, size_t size) {
-    // if (memories[addr].src != addr) {
-    //     size = min(size, Size(addr));
-    // }
     Memory::MemT &mem = mems.get(addr, true);
-    int index = regs.get(id).index() / 5 * 5;
     if (!inits.valid(addr)) {
         size = min(size, mem.size());
     }
-    for (int i = 0; i < 5; ++i) {
-        id = reglists[index + i];
-        if (id == 0) continue;
-        Register::RegT &reg = regs.get(id);
-        reg.taint(mem.src(), size, mem.isBigendian(), 0);
-    }
+    regs.taint(id, mem.src(), size, mem.isBigendian(), 0);
 }
 
 
 void move(uint64_t addr, REG id, size_t size) {
-    Memory::MemT &mem = mems.get(addr, true);
+    // Memory::MemT &mem = mems.get(addr, true);
     Register::RegT &reg = regs.get(id);
-    mem.taint(reg.src(), min(size, reg.size()), reg.isBigendian()); // regsize < size
+    mems.taint(addr, reg.src(), min(size, reg.size()), reg.isBigendian()); // regsize < size
 }
 
 
 void move(uint64_t w, uint64_t r, size_t size) {
-    Memory::MemT &mem_w = mems.get(w, true);
+    // Memory::MemT &mem_w = mems.get(w, true);
     Memory::MemT &mem_r = mems.get(r);
     if (!inits.valid(r)) { // original source address's size come from input size
         size = min(size, mem_r.size());
     }
-    mem_w.taint(mem_r.src(), size, mem_r.isBigendian());
+    mems.taint(w, mem_r.src(), size, mem_r.isBigendian());
 }
 
 
@@ -666,47 +679,54 @@ bool merge(REG w, REG r) {
     logger::debug("before\n%s", regs.debug(w));
     logger::debug("%s", regs.debug(r));
 
-    bool bigendian = lhs.isBigendian();
     uint64_t src = min(lhs.src(), rhs.src());
-    int shift = min(lhs.shift(), rhs.shift());
     size_t size = lhs.size() + rhs.size();
-    if ((diff_src > 0 && diff_shift < 0) || (diff_src < 0 && diff_shift > 0)) {
-        bigendian = true;
-    }
+    bool bigendian = (diff_src > 0 && diff_shift < 0) || (diff_src < 0 && diff_shift > 0);
+    int shift = min(lhs.shift(), rhs.shift());
 
-    int index = regs.get(w).index() / 5 * 5;
-    for (int i = 0; i < 5; ++i) {
-        REG id = reglists[index + i];
-        if (id == 0) continue;
-        regs.get(id).taint(src, size, bigendian, shift);
-    }
+    regs.taint(w, src, size, bigendian, shift);
     logger::debug("after\n%s", regs.debug(w));
     return true;
 }
 
-void shift(REG id, int offset) { // type
-    int index = regs.get(id).index() / 5 * 5;
-    for (int i = 0; i < 5; ++i) {
-        id = reglists[index + i];
-        if (id == 0) continue;
-        Register::RegT &reg = regs.get(id);
-        if (offset >= 0) {
-            reg.lshift(offset);
-        } else {
-            reg.rshift(-offset);
-        }
-    }
+void shift(REG id, int offset) {
+    regs.shift(id, offset);
 }
 
-// void and(REG id, size_t mask) { // TODO
-//     if (mask == 0xff) {
 
-//     } else if (mask == 0xff00) {
+void and_(REG id, size_t mask) { // uncheck
+    Register::RegT &reg = regs.get(id);    
+    uint64_t src = reg.src();
 
-//     } else {
-//         printf("unhandle mask %lx\n", mask);
-//     }
-// }
+    bool bigendian = reg.isBigendian();
+    int shift = reg.shift();
+    if (shift > 0) {
+        logger::print("unhandle shift %d, mask %lx\n", shift, mask);
+    }
+    if (mask == 0xff) {
+        if (bigendian) src += 3;
+        regs.taint(id, src, 1, false, 0);
+    } else if (mask == 0xff00) {
+        if (bigendian) src += 2;
+        else src += 1;
+        regs.taint(id, src, 1, false, 1);
+    } else if (mask == 0xff0000){
+        if (bigendian) src += 1;
+        else src += 2;
+        regs.taint(id, src, 1, false, 2);
+    } else if (mask == 0xff000000){
+        if (!bigendian) src += 3;
+        regs.taint(id, src, 1, false, 3);
+    } else if (mask == 0xffff){
+        if (bigendian) src += 2;
+        regs.taint(id, src, 2, bigendian, 0);
+    } else if (mask == 0xffff0000){
+        if (!bigendian) src += 2;
+        regs.taint(id, src, 2, bigendian, 2);
+    } else {
+        logger::print("unhandle mask %lx\n", mask);
+    }
+}
 
 } // namespace TaintTrackEngine end
 

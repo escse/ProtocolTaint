@@ -15,13 +15,10 @@ const string mode = "release";
 KNOB<string> InputFile(KNOB_MODE_WRITEONCE, "pintool",
     "i", "./a.out", "binary file name");
 
-KNOB<string> DebugOutputFile(KNOB_MODE_WRITEONCE, "pintool",
-    "log", "debug.txt", "log file name");
-
-KNOB<string> InfoOutputFile(KNOB_MODE_WRITEONCE, "pintool",
-    "info", "info.txt", "info file name");
 
 const std::string start_entry = "main";
+// const std::string start_entry = "init_codecs"; // for python
+
 
 void assert(bool a, const char *info=0) {
     if (!a) {
@@ -96,25 +93,14 @@ void function_exit(int threadId, const std::string* name) {
 // INS_OperandReadOnly
 // INS_OperandWrittenOnly
 
-void PushPopTest(const std::string* assembly, unsigned long address, UINT64 mem, const CONTEXT * ctxt) {
-    ADDRINT value = Context(ctxt).getReg(REG_STACK_PTR);
-    logger::debug("%lx : %s mem: %lx value: %lx\n", address, assembly->c_str(), mem, value);
-}
-
-void EveryInst(const std::string* assembly, unsigned long address) {
-    // if (monitor::invalid()) return;
-    logger::debug("%lx : %s\n", address, assembly->c_str());
-}
-
 
 void Test(Ins ins) {
     UINT32 opcount = ins.OpCount();
     OPCODE opcode = ins.OpCode();
     INT32 ext = ins.Extention();
+    util::prettify(ins);
     if (ins.isCall() || ins.isRet() || ins.isBranch() || ins.isNop() || opcount <= 1) return;
 
-    
-    if (ins.isCall() || ins.isRet() || ins.isBranch() || ins.isNop() || opcount <= 1) return;
     if (ext >= 40) return; // sse TODO
 
     if (opcount == 2 || (opcode >= 83 && opcode <= 98)) {
@@ -126,33 +112,25 @@ void Test(Ins ins) {
         if (ins.isOpMem(0) && ins.isOpReg(1)) return;
         // if (ins.isOpMem(0) && ins.isOpImm(1)) return;
         // if ((ins.isMemoryWrite() || ins.isMemoryRead())) return;
-        
-        // pp(ins);
-
     } else if (opcount == 3) {
         // if (opcode != XED_ICLASS_XOR) return;
         // add sub adc(carry) sbb(borrow)
         // sar shr shl ror(rotate) or and
         // test cmp bt
-        pp(ins);
     } else if (opcount == 4) {
         // push pop
         // mul div imul idiv
-        // if (opcode == XED_ICLASS_PUSH) 
-        if (opcode == XED_ICLASS_POP) {
-        }
     } else {
-        // pp(ins);
-        
     }
 }
 
 void Instruction(Ins ins) {
     UINT32 opcount = ins.OpCount();
-
+    
+    // filter rules
     if (ins.isCall() || ins.isRet() || ins.isBranch() || ins.isNop() || opcount <= 1 || opcount >= 5) return;
     if (ins.Extention() >= 40) return; // TODO sse instructions 
-    if (opcount == 2 && (ins.isOpImplicit(0) || ins.isOpImplicit(1))) return; // TODO neg inc, dec cgo setx
+    // if (opcount == 2 && (ins.isOpImplicit(0) || ins.isOpImplicit(1))) return; // TODO neg inc, dec cgo setx
     if (ins.isOpReg(0) && (ins.OpReg(0) == REG_RBP || ins.OpReg(0) == REG_RSP || ins.OpReg(0) == REG_RIP)) return;
     if (ins.isOpReg(0) && (ins.OpReg(0) == REG_EBP || ins.OpReg(0) == REG_ESP || ins.OpReg(0) == REG_EIP)) return;
 
@@ -163,44 +141,38 @@ void Instruction(Ins ins) {
     REG reg_w = ins.OpReg(0);
     REG reg_r = ins.OpReg(1);
     
-    if (opcount == 2 || (opcount == 3 && opcode >= 83 && opcode <= 98)) { // condition mov
-        if (ins.isLea()) {
-            insertFlag = true;
+    if (opcount == 2 || (opcount == 3 && opcode >= XED_ICLASS_CMOVB && opcode <= XED_ICLASS_CMOVZ)) { // condition mov
+        if (ins.isLea()) { // reg calculation
             InsertCall(ins, reg_w); // deleteReg
-        }
-        if (ins.isOpReg(0) && ins.isOpMem(1)) {
-            insertFlag = true;
+        } else if (ins.isOpReg(0) && ins.isOpMem(1)) {
             InsertCall(ins, reg_w, 0); // ReadMem
         } else if (ins.isOpMem(0) && ins.isOpReg(1)) {
-            insertFlag = true;
             InsertCall(ins, 0, reg_r); // WriteMem
         } else if (ins.isOpMem(0) && ins.isOpImm(1)) {
-            insertFlag = true;
             InsertCall(ins, 0); // deleteMem
         } else if (ins.isOpReg(0) && ins.isOpReg(1)) {
-            insertFlag = true;
             InsertCall(ins, reg_w, reg_r); // spreadReg
         } else if (ins.isOpReg(0) && ins.isOpImm(1)) {
-            insertFlag = true;
             InsertCall(ins, reg_w); // deleteReg
+        } else {
+            insertFlag = true;
         }
     } else if (opcount == 3) {
         // cmov in opcode == 2
         if (opcode == XED_ICLASS_XOR && ins.isOpReg(0) && ins.isOpReg(1) && reg_w == reg_r) { // xor
-            insertFlag = true;
             InsertCall(ins, reg_w); // deleteReg
         } else if (ins.isOpReg(0) && ins.isOpReg(1)){
-            insertFlag = true;
             InsertCallExtra(ins, reg_w, reg_r); // 
         } else if (ins.isOpReg(0) && ins.isOpMem(1)) {
-            insertFlag = true;
             InsertCallExtra(ins, reg_w, 0); // 
         } else if (ins.isOpReg(0) && ins.isOpImm(1)) {
-            insertFlag = true;
             InsertCallExtra(ins, reg_w); // 
         } else if (ins.isOpMem(0) && ins.isOpImm(1)) {
-            insertFlag = true;
             InsertCallExtra(ins, 0); // 
+        } else if (ins.isOpMem(0) && ins.isOpReg(1)) {
+            // ADD
+        } else {
+            insertFlag = false;
         }
         // add sub adc(carry) sbb(borrow)
         // sar shr shl ror(rotate) or and
@@ -208,24 +180,26 @@ void Instruction(Ins ins) {
     } else if (opcount == 4) {
         if (opcode == XED_ICLASS_PUSH) { // push
             if (ins.isOpReg(0)) {
-                insertFlag = true;
                 InsertCall(ins, 0, reg_w); // WriteMem // note reg_w is the first reg op in push
             } else if (ins.isOpMem(0)) {
-                insertFlag = true;
                 InsertCall(ins, 0, 1); // spreadMem
             } else if (ins.isOpImm(0)) {
-                insertFlag = true;
                 InsertCall(ins, 0); // deleteMem
+            } else {
+                insertFlag = true;
             }
         } else if (opcode == XED_ICLASS_POP) { // pop
             if (ins.isOpReg(0)) {
-                insertFlag = true;
                 InsertCall(ins, reg_w, 0); // ReadMem
+            } else {
+                insertFlag = true;
             }
+        } else {
+            insertFlag = true;
         }
         // mul div imul idiv
     }
-    if (!insertFlag) {
+    if (insertFlag) {
         static std::vector<OPCODE> cache;
         if (find(cache.begin(), cache.end(), opcode) == cache.end()) {
             cache.push_back(opcode);
@@ -237,8 +211,9 @@ void Instruction(Ins ins) {
 
 void Image(IMG img, VOID *v) {
     std::string imgName = IMG_Name(img);
-    logger::verbose("%s\n", imgName.c_str());
+    logger::verbose("image name: %s\n", imgName.c_str());
     if (imgName == InputFile.Value()) {
+        logger::verbose("main image start\n");
         for (SEC sec = IMG_SecHead(img); SEC_Valid(sec); sec = SEC_Next(sec)) {
             for (Rtn rtn = SEC_RtnHead(sec); rtn.Valid(); rtn = rtn.Next()) {
                 if (rtn.isArtificial()) continue;
@@ -262,18 +237,21 @@ void Image(IMG img, VOID *v) {
                         Test(ins);
                 } else {
                     for(Ins ins = rtn.InsHead(); ins.Valid(); ins = ins.Next())
-                        pp(ins);
+                        util::prettify(ins);
                 }
                 rtn.Close();
             }
         }
     } else if (imgName.find("libc") != std::string::npos) {
+        logger::verbose("libc image start\n");
         for (SEC sec = IMG_SecHead(img); SEC_Valid(sec); sec = SEC_Next(sec)) {
             for (Rtn rtn = SEC_RtnHead(sec); rtn.Valid(); rtn = rtn.Next()) {
-                std::string rtnName = rtn.Name();
-                logger::verbose("%s\n", rtnName.c_str());
-                if (rtnName == "recv") {
-                    rtn.Open();
+                std::string *rtnName = new std::string(rtn.Name());
+                
+                logger::verbose("function name: %s\n", rtnName->c_str());
+                rtn.Open();
+
+                if (*rtnName == "recv") {
                     RTN_InsertCall(rtn, IPOINT_BEFORE, (AFUNPTR)Recv_entry,
                         IARG_FUNCARG_ENTRYPOINT_VALUE, 1, // buf
                         IARG_FUNCARG_ENTRYPOINT_VALUE, 2, // len
@@ -282,8 +260,17 @@ void Image(IMG img, VOID *v) {
                         IARG_FUNCARG_ENTRYPOINT_VALUE, 1, // buf
                         IARG_FUNCARG_ENTRYPOINT_VALUE, 2, // len
                         IARG_END);
-                    rtn.Close();
-                } 
+                } else {
+                    // RTN_InsertCall(rtn, IPOINT_BEFORE, (AFUNPTR)function_entry,
+                    //     IARG_THREAD_ID,
+                    //     IARG_PTR, rtnName, IARG_END);
+
+                    // RTN_InsertCall(rtn, IPOINT_AFTER, (AFUNPTR)function_exit, 
+                    //     IARG_THREAD_ID,
+                    //     IARG_PTR, rtnName, IARG_END);
+                }
+                rtn.Close();
+
                 // else if (rtnName == "htonl" || rtnName == "ntohl") {
                 //     rtn.Open(); // 增加function entry会抱内存问题？？
                 //     for(Ins ins = rtn.InsHead(); ins.Valid(); ins = ins.Next()) {
@@ -296,21 +283,27 @@ void Image(IMG img, VOID *v) {
     }
 }
 
-FILE *debug_file;
-FILE *info_file;
+
+FILE *files[3];
 
 void Init() {
-    debug_file = fopen(DebugOutputFile.Value().c_str(), "w");
-    info_file = fopen(InfoOutputFile.Value().c_str(), "w");
-    logger::setDebug(true, debug_file);
-    logger::setInfo(true, info_file);
+    files[0] = fopen("debug.txt", "w");
+    files[1] = fopen("info.txt", "w");
+    files[2] = fopen("verbose.txt", "w");
+    logger::setDebug(true, files[0]);
+    logger::setInfo(true, files[1]);
+    logger::setVerbose(true, files[2]);
 }
 
+
 void Fini(INT32 code, VOID *v) {
-    fprintf(debug_file, "#eof\n");
-    fclose(debug_file);
-    fprintf(info_file, "#eof\n");
-    fclose(info_file);
+    printf("program end\n");
+    fprintf(files[0], "#eof\n");
+    fclose(files[0]);
+    fprintf(files[1], "#eof\n");
+    fclose(files[1]);
+    fprintf(files[2], "#eof\n");
+    fclose(files[2]);
 }
 
 
@@ -335,9 +328,8 @@ int main(int argc, char * argv[]) {
     // Register Routine to be called to instrument rtn
     PIN_AddSyscallEntryFunction(Syscall_entry, 0);
     PIN_AddSyscallExitFunction(Syscall_exit, 0);
-
     PIN_StartProgram();
-
     PIN_AddFiniFunction(Fini, 0);
+
     return 0;
 }

@@ -29,62 +29,63 @@ inline void end() {
 } // monitor namespace end
 
 namespace logger {
-    const bool isFlush = true;
-    bool _debug = false;
-    FILE *_dout = stdout;
-    bool _verbose = false;
-    FILE *_vout = stdout;
-    bool _info = false;
-    FILE *_iout = stdout;
-    
-    void setDebug(bool b, FILE *out=stdout) {_debug = b; _dout = out;}
-    void setVerbose(bool b, FILE *out=stdout) {_verbose = b; _vout = out;}
-    void setInfo(bool b, FILE *out=stdout) {_info = b; _iout = out;}
-    
 
-    void debug(const char *fmt, ...) {
-        if (!_debug) return;
-        va_list arg;
-        va_start(arg, fmt);
-        vfprintf(_dout, fmt, arg);
-        va_end(arg);
-        if (isFlush) fflush(_dout);
-    }
+const bool isFlush = true;
+bool _debug = false;
+FILE *_dout = stdout;
+bool _verbose = false;
+FILE *_vout = stdout;
+bool _info = false;
+FILE *_iout = stdout;
 
-    void verbose(const char *fmt, ...) {
-        if (!_verbose) return;
-        va_list arg;
-        va_start(arg, fmt);
-        vfprintf(_vout, fmt, arg);
-        va_end(arg);
-        if (isFlush) fflush(_vout);
-    }
+void setDebug(bool b, FILE *out=stdout) {_debug = b; _dout = out;}
+void setVerbose(bool b, FILE *out=stdout) {_verbose = b; _vout = out;}
+void setInfo(bool b, FILE *out=stdout) {_info = b; _iout = out;}
 
-    void info(const char *fmt, ...) {
-        if (!_info) return;
-        va_list arg;
-        va_start(arg, fmt);
-        vfprintf(_iout, fmt, arg);
-        va_end(arg);
-        if (isFlush) fflush(_iout);
-    }
 
-    void print(const char *fmt, ...) {
-        va_list arg;
-        va_start(arg, fmt);
-        vfprintf(stdout, fmt, arg);
-        va_end(arg);
-        if (isFlush) fflush(stdout);
-    }
+void debug(const char *fmt, ...) {
+    if (!_debug) return;
+    va_list arg;
+    va_start(arg, fmt);
+    vfprintf(_dout, fmt, arg);
+    va_end(arg);
+    if (isFlush) fflush(_dout);
+}
 
-    void printline(const unsigned char *start, size_t size) {
-        size = min(size, (size_t)128);
-        printf("size %lx:\t", size);
-        for (size_t i = 0; i < size; ++i) {
-            printf("(%x) ", *start++);
-        }
-        printf("\n");
+void verbose(const char *fmt, ...) {
+    if (!_verbose) return;
+    va_list arg;
+    va_start(arg, fmt);
+    vfprintf(_vout, fmt, arg);
+    va_end(arg);
+    if (isFlush) fflush(_vout);
+}
+
+void info(const char *fmt, ...) {
+    if (!_info) return;
+    va_list arg;
+    va_start(arg, fmt);
+    vfprintf(_iout, fmt, arg);
+    va_end(arg);
+    if (isFlush) fflush(_iout);
+}
+
+void print(const char *fmt, ...) {
+    va_list arg;
+    va_start(arg, fmt);
+    vfprintf(stdout, fmt, arg);
+    va_end(arg);
+    if (isFlush) fflush(stdout);
+}
+
+void printline(const unsigned char *start, size_t size) {
+    size = min(size, (size_t)128);
+    printf("size %lx:\t", size);
+    for (size_t i = 0; i < size; ++i) {
+        printf("(%x) ", *start++);
     }
+    printf("\n");
+}
 
 } // log namespace end
 
@@ -115,7 +116,7 @@ void debug() {
 } // end of namespace debug
 
 
-
+namespace util {
 
 inline ADDRINT Value(UINT64 mem, size_t size) { // a bit weird
     ADDRINT value;
@@ -150,14 +151,14 @@ inline void ValueCopy(void *dst, uint64_t addr, size_t size) {
                   ((((unsigned long long)(n) & 0xFF000000000000)) >> 50) | \
                   ((((unsigned long long)(n) & 0xFF00000000000000)) >> 56)) 
 
-uint64_t swap_(uint64_t value, int size) { // rename swap
+uint64_t swap(uint64_t value, int size) {
     if (size == 1) return value;
     if (size == 2) return swap16(value);
     if (size == 3) return swap32(value) >> 8;
     if (size == 4) return swap32(value);
     if (size == 6) return swap64(value) >> 16;
     if (size == 8) return swap64(value);
-    printf("error swap value size: %d\n", size); // TODO size = 6
+    printf("error swap value size: %d\n", size);
     return value;
 }
 
@@ -172,9 +173,9 @@ const char *nums(int start, int size) {
     return buf;
 }
 
-std::string Tag(Ins ins, UINT32 opcount) {
+std::string Tag(Ins ins, size_t opcount) {
     std::string tag = "";
-    for (UINT32 i = 0; i < opcount; ++i) {
+    for (size_t i = 0; i < opcount; ++i) {
         if (ins.isOpReg(i)) {
             tag += "Reg ";
         }
@@ -193,27 +194,13 @@ std::string Tag(Ins ins, UINT32 opcount) {
     return tag;
 }
 
-void pp2(Ins ins) {
-    printf("%-12lx\t%-32s\tOpCode: %d\tMemOps: %d\tRead: %d Write: %d\t\n", ins.Address(), ins.Name().c_str(), ins.OpCount(), ins.MemCount(), ins.isMemoryRead(), ins.isMemoryWrite());
-}
-
-void pp(Ins ins) {
+void prettify(Ins ins) {
     UINT32 opcount = ins.OpCount();
     OPCODE opcode = ins.OpCode();
     std::string tag = Tag(ins, opcount);
-    logger::debug("%-12lx\t%-32s\tOpCode: %d\tMemOps: %d\tRead: %d Write: %d\t", ins.Address(), ins.Name().c_str(), opcode, ins.MemCount(), ins.isMemoryRead(), ins.isMemoryWrite());
-    logger::debug("%s ", tag.c_str());
-    for (UINT32 i = 0; i < opcount; ++i) {
-        if (REG_valid(ins.OpReg(i))) {
-            logger::debug("%s\t", REG_StringShort(ins.OpReg(i)).c_str());
-        } else {
-            logger::debug("---\t");
-        }
-    }
-    REG reg_w = ins.OpReg(0);
-    REG reg_r = ins.OpReg(1);
-    logger::debug("equal: %d ", reg_w == reg_r);
-    logger::debug("\n");
+    logger::debug("%-8lx%-36sOpCode: %4d \t %s\n", ins.Address(), ins.Name().c_str(), opcode, tag.c_str());
 }
+
+} // end of namespace util
 
 #endif

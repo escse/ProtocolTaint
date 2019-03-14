@@ -69,7 +69,7 @@ void ReadMem(const std::string* assembly, unsigned long address, REG reg, UINT64
     bool taint_r = TaintEngine::isTainted(mem);
     if (!taint_w && !taint_r) return;
     debug::log(address, assembly->c_str());
-    ADDRINT value = Value(mem, size);
+    ADDRINT value = util::Value(mem, size);
     if (taint_r) { // retaint
         logger::debug("[Reg <- Mem %s]\t%lx: %s\t addr: %lx value: (%lx, %lx)\n", printinfo[taint_w][taint_r], address, assembly->c_str(), mem, TaintEngine::src(mem), value);
         logger::debug("%s", TaintEngine::debug(mem));
@@ -83,7 +83,7 @@ void ReadMem(const std::string* assembly, unsigned long address, REG reg, UINT64
 
         TaintEngine::remove(reg);
     }
-    logger::debug("%s", "\n");
+    logger::debug("\n");
 }
 
 // mem <- reg
@@ -106,7 +106,7 @@ void WriteMem(const std::string* assembly, unsigned long address, UINT64 mem, RE
 
         TaintEngine::remove(mem);
     }
-    logger::debug("%s", "\n");
+    logger::debug("\n");
 }
 
 // reg <- reg
@@ -129,7 +129,7 @@ void spreadReg(const std::string* assembly, unsigned long address, REG reg_w, RE
 
         TaintEngine::remove(reg_w);
     }
-    logger::debug("%s", "\n");
+    logger::debug("\n");
 }
 
 // mem <- mem
@@ -139,7 +139,7 @@ void spreadMem(const std::string* assembly, unsigned long address, UINT64 mem_w,
     bool taint_r = TaintEngine::isTainted(mem_r);
     if (!taint_w && !taint_r) return;
     debug::log(address, assembly->c_str());
-    ADDRINT value = Value(mem_r, size);
+    ADDRINT value = util::Value(mem_r, size);
     if (taint_r) { // retaint
         logger::debug("[Mem <- Mem %s]\t%lx: %s\t mem_w: %lx mem_r: %lx value: (%lx, %lx)\n", printinfo[taint_w][taint_r], address, assembly->c_str(), mem_w, mem_r, TaintEngine::src(mem_r), value);
         logger::debug("%s", TaintEngine::debug(mem_r));
@@ -153,7 +153,7 @@ void spreadMem(const std::string* assembly, unsigned long address, UINT64 mem_w,
 
         TaintEngine::remove(mem_w);
     }
-    logger::debug("%s", "\n");
+    logger::debug("\n");
 }
 
 // reg <- imm
@@ -163,7 +163,7 @@ void deleteReg(const std::string* assembly, unsigned long address, REG reg) {
         debug::log(address, assembly->c_str());
         logger::debug("[DELETE Reg]\t%lx : %s\n", address, assembly->c_str());
         logger::debug("before: %s", TaintEngine::debug(reg));
-        logger::debug("%s", "\n");
+        logger::debug("\n");
 
         TaintEngine::remove(reg);
     }
@@ -174,11 +174,11 @@ void deleteMem(const std::string* assembly, unsigned long address, UINT64 mem, U
     if (monitor::invalid()) return;
     if (TaintEngine::isTainted(mem)) {
         debug::log(address, assembly->c_str());
-        ADDRINT value = Value(mem, size);
+        ADDRINT value = util::Value(mem, size);
 
         logger::debug("[DELETE Mem]\t\t%lx: %s value: %lx\n", address, assembly->c_str(), value);
         logger::debug("%s", TaintEngine::debug(mem));
-        logger::debug("%s", "\n");
+        logger::debug("\n");
 
         TaintEngine::remove(mem);
     }
@@ -276,7 +276,7 @@ void Op3RegReg(const std::string* assembly, unsigned long address, int opcode, R
             logger::info("Instruction %lx: %s\t%s\t%lx\n", address, assembly->c_str(), TaintEngine::offsets(reg_w), value_w);
         }
     }
-    logger::debug("%s", "\n");
+    logger::debug("\n");
 }
 
 void InsertCallExtra(Ins ins, REG reg_w, REG reg_r) { // Reg Reg
@@ -297,18 +297,17 @@ void Op3RegImm(const std::string* assembly, unsigned long address, int opcode, R
         debug::log(address, assembly->c_str());
         if (opcode == XED_ICLASS_SHL) {
             TaintEngine::shift(reg, imm);
-        } else if (opcode == XED_ICLASS_SAR) { // TODO SHR
-            TaintEngine::shift(reg, -imm);
-        } else if (opcode == XED_ICLASS_AND) {
-            // TaintEngine::and(reg, imm);
+        } else if (opcode == XED_ICLASS_SHR || opcode == XED_ICLASS_SAR || opcode == XED_ICLASS_ROR) {
+            TaintEngine::shift(reg, -imm); // ror uncheck
+        } else if (opcode == XED_ICLASS_AND) { // and uncheck
+            TaintEngine::and_(reg, imm);
         }
         logger::debug("[USE RegImm]\t\t%lx: %s value: %lx, opcode: %d, imm: %d\n", address, assembly->c_str(), value, opcode, imm);
         logger::debug("%s", TaintEngine::debug(reg));
-        logger::debug("%s", "\n");
+        logger::debug("\n");
 
         logger::info("Instruction %lx: %s\t%s\t%lx\n", address, assembly->c_str(), TaintEngine::offsets(reg), value);
-    }
-    
+    }   
 }
 
 void InsertCallExtra(Ins ins, REG reg) { // Reg Imm
@@ -328,7 +327,7 @@ void Op3RegMem(const std::string* assembly, unsigned long address, int opcode, R
     bool taint_r = TaintEngine::isTainted(mem);
     if (!taint_w && !taint_r) return;
     debug::log(address, assembly->c_str());
-    ADDRINT value_r = Value(mem, size);
+    ADDRINT value_r = util::Value(mem, size);
     logger::debug("[USE RegMem]\t\t%lx: %s value: %lx, opcode: %d\n", address, assembly->c_str(), value_w, opcode); // TODO
     
     if (taint_w) {
@@ -339,7 +338,7 @@ void Op3RegMem(const std::string* assembly, unsigned long address, int opcode, R
         logger::debug("%s", TaintEngine::debug(mem));
         logger::info("Instruction %lx: %s\t%s\t%lx\n", address, assembly->c_str(), TaintEngine::offsets(mem), value_r);
     }
-    logger::debug("%s", "\n");
+    logger::debug("\n");
 }
 
 void InsertCallExtra(Ins ins, REG reg, int mem) { // Reg Mem
@@ -358,10 +357,10 @@ void Op3MemImm(const std::string* assembly, unsigned long address, int opcode, U
     if (monitor::invalid()) return;
     if (TaintEngine::isTainted(mem)) {
         debug::log(address, assembly->c_str());
-        ADDRINT value = Value(mem, size);
+        ADDRINT value = util::Value(mem, size);
         logger::debug("[USE MemImm]\t\t%lx: %s value: %lx, opcode: %d\n", address, assembly->c_str(), value, opcode);
         logger::debug("%s", TaintEngine::debug(mem));
-        logger::debug("%s", "\n");
+        logger::debug("\n");
 
         logger::info("Instruction %lx: %s\t%s\t%lx\n", address, assembly->c_str(), TaintEngine::offsets(mem), value);
     }
