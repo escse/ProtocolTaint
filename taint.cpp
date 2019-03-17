@@ -7,26 +7,8 @@
 #include "wrapper.hpp"
 #include "logic.hpp"
 #include "util.hpp"
+#include "config.hpp"
 
-// const string mode = "debug";
-const string mode = "release";
-
-
-KNOB<string> InputFile(KNOB_MODE_WRITEONCE, "pintool",
-    "i", "./a.out", "binary file name");
-
-
-const std::string start_entry = "main";
-// const std::string start_entry = "init_codecs"; // for python
-
-
-void assert(bool a, const char *info=0) {
-    if (!a) {
-        logger::debug("assert error %s\n", (info > 0) ? info: "");
-    }
-}
-
-// function trace start
 
 std::vector<std::vector<std::string> > functraces;
 std::vector<int> threadIds;
@@ -43,7 +25,7 @@ void printTrace(int index) {
 
 
 void function_entry(int threadId, const std::string* name) {
-    if (*name == start_entry) monitor::start();
+    if (*name == config::start_entry) monitor::start();
     if (monitor::invalid()) return;
     if (name->find("@plt") != std::string::npos) {
         plts.push_back(*name);
@@ -74,16 +56,15 @@ void function_exit(int threadId, const std::string* name) {
     //     functraces[index].pop_back();    
     // }
 
-    assert(functraces[index].back() == *name);
+    util::assert(functraces[index].back() == *name);
     functraces[index].pop_back();
     
     logger::debug("thread id: %d, exit  function: %s\n", threadId, name->c_str());
     logger::info("exit\t%s\n", name->c_str());
         // printTrace(index);
-    if (*name == start_entry) monitor::end();
+    if (*name == config::start_entry) monitor::end();
 }
 
-// function trace end
 
 // INS_OperandImmediate
 // INS_OperandRead
@@ -98,7 +79,8 @@ void Test(Ins ins) {
     UINT32 opcount = ins.OpCount();
     OPCODE opcode = ins.OpCode();
     INT32 ext = ins.Extention();
-    util::prettify(ins);
+
+    logger::verbose("%s", util::prettify(ins));
     if (ins.isCall() || ins.isRet() || ins.isBranch() || ins.isNop() || opcount <= 1) return;
 
     if (ext >= 40) return; // sse TODO
@@ -134,7 +116,7 @@ void Instruction(Ins ins) {
     if (ins.isOpReg(0) && (ins.OpReg(0) == REG_RBP || ins.OpReg(0) == REG_RSP || ins.OpReg(0) == REG_RIP)) return;
     if (ins.isOpReg(0) && (ins.OpReg(0) == REG_EBP || ins.OpReg(0) == REG_ESP || ins.OpReg(0) == REG_EIP)) return;
 
-    bool insertFlag = false;
+    bool miss = false;
 
     OPCODE opcode = ins.OpCode();
     
@@ -155,7 +137,7 @@ void Instruction(Ins ins) {
         } else if (ins.isOpReg(0) && ins.isOpImm(1)) {
             InsertCall(ins, reg_w); // deleteReg
         } else {
-            insertFlag = true;
+            miss = true;
         }
     } else if (opcount == 3) {
         // cmov in opcode == 2
@@ -172,7 +154,7 @@ void Instruction(Ins ins) {
         } else if (ins.isOpMem(0) && ins.isOpReg(1)) {
             // ADD
         } else {
-            insertFlag = false;
+            miss = false;
         }
         // add sub adc(carry) sbb(borrow)
         // sar shr shl ror(rotate) or and
@@ -186,20 +168,20 @@ void Instruction(Ins ins) {
             } else if (ins.isOpImm(0)) {
                 InsertCall(ins, 0); // deleteMem
             } else {
-                insertFlag = true;
+                miss = true;
             }
         } else if (opcode == XED_ICLASS_POP) { // pop
             if (ins.isOpReg(0)) {
                 InsertCall(ins, reg_w, 0); // ReadMem
             } else {
-                insertFlag = true;
+                miss = true;
             }
         } else {
-            insertFlag = true;
+            miss = true;
         }
         // mul div imul idiv
     }
-    if (insertFlag) {
+    if (config::missFlag && miss) {
         static std::vector<OPCODE> cache;
         if (find(cache.begin(), cache.end(), opcode) == cache.end()) {
             cache.push_back(opcode);
@@ -211,19 +193,34 @@ void Instruction(Ins ins) {
 
 void Image(IMG img, VOID *v) {
     std::string imgName = IMG_Name(img);
-    logger::verbose("image name: %s\n", imgName.c_str());
-    if (imgName == InputFile.Value()) {
-        logger::verbose("main image start\n");
-        for (SEC sec = IMG_SecHead(img); SEC_Valid(sec); sec = SEC_Next(sec)) {
-            for (Rtn rtn = SEC_RtnHead(sec); rtn.Valid(); rtn = rtn.Next()) {
+    if (config::mode == "release") {
+        logger::verbose("image: %s\n", imgName.c_str());
+        if (IMG_IsMainExecutable(img)) {
+            for (SEC sec = IMG_SecHead(img); SEC_Valid(sec); sec = SEC_Next(sec)) {
+                for (Rtn rtn = SEC_RtnHead(sec); rtn.Valid(); rtn = rtn.Next()) {
                 if (rtn.isArtificial()) continue;
-                std::string *rtnName = new std::string(rtn.Name());
-                logger::verbose("%s\n", rtnName->c_str());
-                rtn.Open();
-                if (mode == "release") {
+                    std::string *rtnName = new std::string(rtn.Name());
+                    
+                    logger::verbose("function %s\n", rtnName->c_str());
+                    
+                    rtn.Open();
+
                     RTN_InsertCall(rtn, IPOINT_BEFORE, (AFUNPTR)function_entry, 
                         IARG_THREAD_ID,
                         IARG_PTR, rtnName, IARG_END);
+
+                    // if (*rtnName == "recv") {
+                    //     RTN_InsertCall(rtn, IPOINT_BEFORE, (AFUNPTR)Recv_entry,
+                    //         IARG_FUNCARG_ENTRYPOINT_VALUE, 0, // socket
+                    //         IARG_FUNCARG_ENTRYPOINT_VALUE, 1, // buf
+                    //         IARG_FUNCARG_ENTRYPOINT_VALUE, 2, // len
+                    //         IARG_END);
+                    //     RTN_InsertCall(rtn, IPOINT_AFTER, (AFUNPTR)Recv_exit,
+                    //         IARG_FUNCARG_ENTRYPOINT_VALUE, 0, // socket
+                    //         IARG_FUNCARG_ENTRYPOINT_VALUE, 1, // buf
+                    //         IARG_FUNCARG_ENTRYPOINT_VALUE, 2, // len
+                    //         IARG_END);
+                    // }
 
                     RTN_InsertCall(rtn, IPOINT_AFTER, (AFUNPTR)function_exit, 
                         IARG_THREAD_ID,
@@ -232,54 +229,72 @@ void Image(IMG img, VOID *v) {
                     for(Ins ins = rtn.InsHead(); ins.Valid(); ins = ins.Next()) {
                         Instruction(ins);
                     }
-                } else if (mode == "debug") {
-                    for(Ins ins = rtn.InsHead(); ins.Valid(); ins = ins.Next())
-                        Test(ins);
-                } else {
-                    for(Ins ins = rtn.InsHead(); ins.Valid(); ins = ins.Next())
-                        util::prettify(ins);
+
+                    rtn.Close();
                 }
-                rtn.Close();
+            }
+        } else if (imgName.find("libc") != std::string::npos) {
+            for (SEC sec = IMG_SecHead(img); SEC_Valid(sec); sec = SEC_Next(sec)) {
+                for (Rtn rtn = SEC_RtnHead(sec); rtn.Valid(); rtn = rtn.Next()) {
+                    std::string *rtnName = new std::string(rtn.Name());
+                    
+                    logger::verbose("function %s\n", rtnName->c_str());
+
+                    rtn.Open();
+                    if (*rtnName == "recv") {
+                        RTN_InsertCall(rtn, IPOINT_BEFORE, (AFUNPTR)Recv_entry,
+                            IARG_FUNCARG_ENTRYPOINT_VALUE, 0, // socket
+                            IARG_FUNCARG_ENTRYPOINT_VALUE, 1, // buf
+                            IARG_FUNCARG_ENTRYPOINT_VALUE, 2, // len
+                            IARG_END);
+                        RTN_InsertCall(rtn, IPOINT_AFTER, (AFUNPTR)Recv_exit,
+                            IARG_FUNCARG_ENTRYPOINT_VALUE, 0, // socket
+                            IARG_FUNCARG_ENTRYPOINT_VALUE, 1, // buf
+                            IARG_FUNCARG_ENTRYPOINT_VALUE, 2, // len
+                            IARG_END);
+                    } else if (*rtnName == "recvfrom") {
+                        RTN_InsertCall(rtn, IPOINT_BEFORE, (AFUNPTR)Recvfrom_entry,
+                            IARG_FUNCARG_ENTRYPOINT_VALUE, 0, // socket
+                            IARG_FUNCARG_ENTRYPOINT_VALUE, 1, // buf
+                            IARG_FUNCARG_ENTRYPOINT_VALUE, 2, // len
+                            IARG_END);
+                        RTN_InsertCall(rtn, IPOINT_AFTER, (AFUNPTR)Recvfrom_exit,
+                            IARG_FUNCARG_ENTRYPOINT_VALUE, 0, // socket
+                            IARG_FUNCARG_ENTRYPOINT_VALUE, 1, // buf
+                            IARG_FUNCARG_ENTRYPOINT_VALUE, 2, // len
+                            IARG_END);
+                    } else if (*rtnName == "memcpy") { // memcpy use xmm registers to copy
+                        RTN_InsertCall(rtn, IPOINT_BEFORE, (AFUNPTR)Memcpy_entry,
+                            IARG_FUNCARG_ENTRYPOINT_VALUE, 0, // dest
+                            IARG_FUNCARG_ENTRYPOINT_VALUE, 1, // src
+                            IARG_FUNCARG_ENTRYPOINT_VALUE, 2, // len
+                            IARG_END);
+                    }
+                    // else if (*rtnName == "htonl" || *rtnName == "ntohl")
+                    rtn.Close();
+                }
             }
         }
-    } else if (imgName.find("libc") != std::string::npos) {
-        logger::verbose("libc image start\n");
+    } else if (config::mode == "debug") {
+        
+        logger::verbose("image start: %s\n", imgName.c_str());
+
         for (SEC sec = IMG_SecHead(img); SEC_Valid(sec); sec = SEC_Next(sec)) {
             for (Rtn rtn = SEC_RtnHead(sec); rtn.Valid(); rtn = rtn.Next()) {
+                if (rtn.isArtificial()) continue;
                 std::string *rtnName = new std::string(rtn.Name());
-                
-                logger::verbose("function name: %s\n", rtnName->c_str());
+                logger::verbose("function start %s\n", rtnName->c_str());
+
                 rtn.Open();
-
-                if (*rtnName == "recv") {
-                    RTN_InsertCall(rtn, IPOINT_BEFORE, (AFUNPTR)Recv_entry,
-                        IARG_FUNCARG_ENTRYPOINT_VALUE, 1, // buf
-                        IARG_FUNCARG_ENTRYPOINT_VALUE, 2, // len
-                        IARG_END);
-                    RTN_InsertCall(rtn, IPOINT_AFTER, (AFUNPTR)Recv_exit,
-                        IARG_FUNCARG_ENTRYPOINT_VALUE, 1, // buf
-                        IARG_FUNCARG_ENTRYPOINT_VALUE, 2, // len
-                        IARG_END);
-                } else {
-                    // RTN_InsertCall(rtn, IPOINT_BEFORE, (AFUNPTR)function_entry,
-                    //     IARG_THREAD_ID,
-                    //     IARG_PTR, rtnName, IARG_END);
-
-                    // RTN_InsertCall(rtn, IPOINT_AFTER, (AFUNPTR)function_exit, 
-                    //     IARG_THREAD_ID,
-                    //     IARG_PTR, rtnName, IARG_END);
+                for(Ins ins = rtn.InsHead(); ins.Valid(); ins = ins.Next()) {
+                    Test(ins);
                 }
                 rtn.Close();
 
-                // else if (rtnName == "htonl" || rtnName == "ntohl") {
-                //     rtn.Open(); // 增加function entry会抱内存问题？？
-                //     for(Ins ins = rtn.InsHead(); ins.Valid(); ins = ins.Next()) {
-                //         Instruction(ins);
-                //     }
-                //     rtn.Close();
-                // }
+                logger::verbose("function end %s\n", rtnName->c_str());
             }
         }
+        logger::verbose("image end: %s\n", imgName.c_str());
     }
 }
 
@@ -287,12 +302,12 @@ void Image(IMG img, VOID *v) {
 FILE *files[3];
 
 void Init() {
-    files[0] = fopen("debug.txt", "w");
-    files[1] = fopen("info.txt", "w");
-    files[2] = fopen("verbose.txt", "w");
-    logger::setDebug(true, files[0]);
-    logger::setInfo(true, files[1]);
-    logger::setVerbose(true, files[2]);
+    files[0] = fopen(config::filenames[0], "w");
+    files[1] = fopen(config::filenames[1], "w");
+    files[2] = fopen(config::filenames[2], "w");
+    logger::setDebug(config::flags[0], files[0]);
+    logger::setInfo(config::flags[1], files[1]);
+    logger::setVerbose(config::flags[2], files[2]);
 }
 
 
@@ -319,15 +334,15 @@ INT32 Usage() {
 int main(int argc, char * argv[]) {
     if (PIN_Init(argc, argv)) return Usage();
     Init();
-    // logger::setVerbose(true);
     // Initialize symbol table code, needed for rtn instrumentation
     PIN_InitSymbols();
     // PIN_SetSyntaxIntel();
     IMG_AddInstrumentFunction(Image, 0);
-    // Rtn::addBlackImageName("libc");
-    // Register Routine to be called to instrument rtn
-    PIN_AddSyscallEntryFunction(Syscall_entry, 0);
-    PIN_AddSyscallExitFunction(Syscall_exit, 0);
+    if (config::syscall) {
+        PIN_AddSyscallEntryFunction(Syscall_entry, 0);
+        PIN_AddSyscallExitFunction(Syscall_exit, 0);
+    }
+        
     PIN_StartProgram();
     PIN_AddFiniFunction(Fini, 0);
 

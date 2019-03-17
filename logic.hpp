@@ -10,53 +10,84 @@
 
 const char *printinfo[2][2] = {{ "", "+  taint  +"}, {"- untaint -", "* retaint *"}};
 
-// taint logic start
 
-// static unsigned int tryksOpen;
-static unsigned int tryksClose;
-
-
-#define TRICKS_CLOSE()                      \
-    {                                 \
-        if (tryksClose++ == 0) return; \
-    }
-
-void Syscall_entry(THREADID thread_id, CONTEXT *ctx, SYSCALL_STANDARD std,
-                   void *v) {
-    // UINT64 start, size;
-
-    // if (PIN_GetSyscallNumber(ctx, std) == __NR_read) {
-    //     TRICKS_OPEN(); /* tricks to ignore the first open */
-
-    //     start = static_cast<UINT64>((PIN_GetSyscallArgument(ctx, std, 1)));
-    //     size = static_cast<UINT64>((PIN_GetSyscallArgument(ctx, std, 2)));
-
-    //     TaintEngine::Init(start, size);
-    //     logger::debug("[TAINT]\t %lx bytes tainted from 0x%lx to 0x%lx (via read)\n", size, start, start+size);
-    // }
-}
-
-void Syscall_exit(THREADID thread_id, CONTEXT *ctx, SYSCALL_STANDARD std,
-                   void *v) {
-    // UINT64 start, size;
-
+void Syscall_entry(THREADID thread_id, CONTEXT *ctx, SYSCALL_STANDARD std, void *v) {
+    if (!monitor::valid()) return;
     if (PIN_GetSyscallNumber(ctx, std) == __NR_read) {
-        TRICKS_CLOSE(); /* tricks to ignore the first open */
-
-        // start = static_cast<UINT64>((PIN_GetSyscallArgument(ctx, std, 1)));
-        // size = static_cast<UINT64>((PIN_GetSyscallArgument(ctx, std, 2)));
-
+        int fd          = static_cast<int>((PIN_GetSyscallArgument(ctx, std, 0)));
+        uint64_t start  = static_cast<uint64_t>((PIN_GetSyscallArgument(ctx, std, 1)));
+        size_t size     = static_cast<size_t>((PIN_GetSyscallArgument(ctx, std, 2)));
+        logger::print("enter read: fd: %d, start: %lx, size: %lx\n", fd, start, size);
+        // if (fd <= 3 || fd > 6 || start <= 0x100 || size <= 2 || size >= 1024) return; // default pass rule
+        // if (config::read_size_flag && (size < config::read_size_min || size > config::read_size_max)) {
+        //     return;
+        // }
+        // logger::debug("[TAINT]\t %lx bytes tainted from 0x%lx to 0x%lx (via read fd: %d)\n", size, start, start+size, fd);
         // TaintEngine::Init(start, size);
     }
 }
 
-void Recv_entry(UINT64 start, size_t size) {
-    // TaintEngine::addInit(start, size); // point to self
+
+void Syscall_exit(THREADID thread_id, CONTEXT *ctx, SYSCALL_STANDARD std, void *v) {
+    if (!monitor::valid()) return;
+    if (PIN_GetSyscallNumber(ctx, std) == __NR_read) {
+        int fd          = static_cast<int>((PIN_GetSyscallArgument(ctx, std, 0)));
+        uint64_t start  = static_cast<uint64_t>((PIN_GetSyscallArgument(ctx, std, 1)));
+        size_t size     = static_cast<size_t>((PIN_GetSyscallArgument(ctx, std, 2)));
+        logger::print("exit read: fd: %d, start: %lx, size: %lx\n", fd, start, size);
+        // if (fd <= 3 || fd > 6 || start <= 0x100 || size <= 2 || size >= 1024) return; // default pass rule
+        // if (config::read_size_flag && (size < config::read_size_min || size > config::read_size_max)) {
+        //     return;
+        // }
+        logger::debug("[TAINT]\t %lx bytes tainted from 0x%lx to 0x%lx (via read fd: %d)\n", size, start, start+size, fd);
+        
+        // TaintEngine::Init(start, size);
+    }
 }
 
-void Recv_exit(UINT64 start, size_t size) {
-    TaintEngine::Init(start, size); // point to self
+
+void Recvfrom_entry(int sock, UINT64 start, size_t size) {
+    logger::print("enter recvfrom: sock: %d, recvfrom: start %lx, size: %lx\n", sock, start, size);
+    if (!monitor::valid()) return;
+    logger::debug("[TAINT]\t %lx bytes tainted from 0x%lx to 0x%lx (via recvfrom sock: %d)\n", size, start, start+size, sock);
+    // TaintEngine::Init(start, size); // point to self
 }
+
+void Recvfrom_exit(int sock, UINT64 start, size_t size) {
+    logger::print("exit recvfrom: sock: %d, recvfrom: start %lx, size: %lx\n", sock, start, size);
+    if (!monitor::valid()) return;
+    logger::debug("[TAINT]\t %lx bytes tainted from 0x%lx to 0x%lx (via recvfrom sock: %d)\n", size, start, start+size, sock);
+    // TaintEngine::Init(start, size); // point to self
+}
+
+
+void Recv_entry(int sock, UINT64 start, size_t size) {
+    logger::print("enter recv: sock: %d, start %lx, size: %lx\n", sock, start, size);
+    if (!monitor::valid()) return;
+    logger::debug("[TAINT]\t %lx bytes tainted from 0x%lx to 0x%lx (via recv sock: %d)\n", size, start, start+size, sock);
+}
+
+
+void Recv_exit(int sock, UINT64 start, size_t size) {
+    logger::print("exit recv: sock: %d, start %lx, size: %lx\n", sock, start, size);
+    if (!monitor::valid()) return;
+    logger::debug("[TAINT]\t %lx bytes tainted from 0x%lx to 0x%lx (via recv sock: %d)\n", size, start, start+size, sock);
+    // TaintEngine::Init(start, size); // point to self
+}
+
+
+void Memcpy_entry(UINT64 dst, UINT64 src, size_t size) {
+    logger::print("enter memcpy: dst %lx, src: %x, size: %lx\n", dst, src, size);
+    if (!monitor::valid()) return;
+    logger::debug("[COPY]\t %lx bytes from 0x%lx to 0x%lx (via memcpy)\n", size, src, dst);
+    
+    for (size_t i = 0; i < size; ++i) {
+        if (TaintEngine::isTainted(src + i)) {
+            TaintEngine::mems.taint(dst + i, src + i, 1, false);
+        }
+    }
+}
+
 
 void EveryInst(const std::string* assembly) { // # TODO
     if (monitor::invalid()) return;

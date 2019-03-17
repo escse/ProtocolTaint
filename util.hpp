@@ -4,7 +4,7 @@
 #include <stdio.h>
 #include <stdarg.h>
 #include "wrapper.hpp"
-
+#include "config.hpp"
 
 namespace monitor {
 
@@ -30,7 +30,7 @@ inline void end() {
 
 namespace logger {
 
-const bool isFlush = true;
+
 bool _debug = false;
 FILE *_dout = stdout;
 bool _verbose = false;
@@ -49,7 +49,7 @@ void debug(const char *fmt, ...) {
     va_start(arg, fmt);
     vfprintf(_dout, fmt, arg);
     va_end(arg);
-    if (isFlush) fflush(_dout);
+    if (config::isFlush) fflush(_dout);
 }
 
 void verbose(const char *fmt, ...) {
@@ -58,7 +58,7 @@ void verbose(const char *fmt, ...) {
     va_start(arg, fmt);
     vfprintf(_vout, fmt, arg);
     va_end(arg);
-    if (isFlush) fflush(_vout);
+    if (config::isFlush) fflush(_vout);
 }
 
 void info(const char *fmt, ...) {
@@ -67,24 +67,26 @@ void info(const char *fmt, ...) {
     va_start(arg, fmt);
     vfprintf(_iout, fmt, arg);
     va_end(arg);
-    if (isFlush) fflush(_iout);
+    if (config::isFlush) fflush(_iout);
 }
 
 void print(const char *fmt, ...) {
+    if (!config::print) return;
     va_list arg;
     va_start(arg, fmt);
-    vfprintf(stdout, fmt, arg);
+    vfprintf(stderr, fmt, arg);
     va_end(arg);
-    if (isFlush) fflush(stdout);
+    if (config::isFlush) fflush(stdout);
 }
 
 void printline(const unsigned char *start, size_t size) {
+    if (!config::print) return;
     size = min(size, (size_t)128);
-    printf("size %lx:\t", size);
+    fprintf(stderr, "size %lx:\t", size);
     for (size_t i = 0; i < size; ++i) {
-        printf("(%x) ", *start++);
+        fprintf(stderr, "(%x) ", *start++);
     }
-    printf("\n");
+    fprintf(stderr, "\n");
 }
 
 } // log namespace end
@@ -164,10 +166,10 @@ uint64_t swap(uint64_t value, int size) {
 
 const char *nums(int start, int size) {
     static char buf[256];
-    int n = sprintf(buf, "%d", start);
+    int n = snprintf(buf, sizeof(buf), "%d", start);
     for (int i = start + 1; i < start + size; ++i) {
         buf[n++] = ',';
-        n += sprintf(buf + n, "%d", i);
+        n += snprintf(buf + n, sizeof(buf) - n, "%d", i);
     }
     buf[n] = 0;
     return buf;
@@ -194,12 +196,22 @@ std::string Tag(Ins ins, size_t opcount) {
     return tag;
 }
 
-void prettify(Ins ins) {
+const char *prettify(Ins ins) {
+    static char buf[512];
     UINT32 opcount = ins.OpCount();
     OPCODE opcode = ins.OpCode();
     std::string tag = Tag(ins, opcount);
-    logger::debug("%-8lx%-36sOpCode: %4d \t %s\n", ins.Address(), ins.Name().c_str(), opcode, tag.c_str());
+    int n = snprintf(buf, sizeof(buf), "%-16lx%-36sOpCode: %4d \t %s\n", ins.Address(), ins.Name().c_str(), opcode, tag.c_str());
+    buf[n] = 0;
+    return buf;
 }
+
+void assert(bool a, const char *info=0) {
+    if (!a) {
+        logger::debug("assert error %s\n", (info > 0) ? info: "");
+    }
+}
+
 
 } // end of namespace util
 

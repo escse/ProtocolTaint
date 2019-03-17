@@ -196,7 +196,7 @@ public:
         
         const char *debug() {
             static char buf[256];
-            int n = sprintf(buf, "memory  :\t\tsrc: %lx, size: %lx, offset: %lx, bigendian: %d, value: %lx\n",  src_, size(), offset(), bigendian_, value());
+            int n = snprintf(buf, sizeof(buf), "memory  :\t\tsrc: %lx, size: %lx, offset: %lx, bigendian: %d, value: %lx\n",  src_, size(), offset(), bigendian_, value());
             buf[n] = 0;
             return buf;
         }
@@ -487,7 +487,7 @@ public:
 
         const char *debug() {
             static char buf[256];
-            int n = sprintf(buf, "register %s:\tsrc: %lx, size: %lx, offset: %lx, bigendian: %d, value: %lx, shift: %d\n", name(), src(), size(), offset(), bigendian_, value(), shift_);
+            int n = snprintf(buf, sizeof(buf), "register %s:\tsrc: %lx, size: %lx, offset: %lx, bigendian: %d, value: %lx, shift: %d\n", name(), src(), size(), offset(), bigendian_, value(), shift_);
             buf[n] = 0;
             return buf;
         }
@@ -618,7 +618,6 @@ uint64_t src(uint64_t addr) {
 // init
 // use in exit entry point
 void Init(size_t start, size_t size) {
-    logger::debug("[TAINT]\t %lx bytes tainted from 0x%lx to 0x%lx\n", size, start, start+size);
     inits.taint(start, size);
     mems.taint(start, size);
 }
@@ -640,14 +639,12 @@ void move(REG id, uint64_t addr, size_t size) {
 
 
 void move(uint64_t addr, REG id, size_t size) {
-    // Memory::MemT &mem = mems.get(addr, true);
     Register::RegT &reg = regs.get(id);
     mems.taint(addr, reg.src(), min(size, reg.size()), reg.isBigendian()); // regsize < size
 }
 
 
 void move(uint64_t w, uint64_t r, size_t size) {
-    // Memory::MemT &mem_w = mems.get(w, true);
     Memory::MemT &mem_r = mems.get(r);
     if (!inits.valid(r)) { // original source address's size come from input size
         size = min(size, mem_r.size());
