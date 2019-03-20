@@ -3,6 +3,7 @@
 
 #include <stdio.h>
 #include <stdarg.h>
+#include <string.h>
 #include "wrapper.hpp"
 #include "config.hpp"
 
@@ -120,6 +121,9 @@ void debug() {
 
 namespace util {
 
+const char *entry = "entry";
+const char *exit = "exit";
+
 inline ADDRINT Value(UINT64 mem, size_t size) { // a bit weird
     ADDRINT value;
     PIN_SafeCopy((void*)(&value), (void *)mem, sizeof(ADDRINT));
@@ -134,8 +138,6 @@ inline ADDRINT Value(UINT64 mem, size_t size) { // a bit weird
 inline void ValueCopy(void *dst, uint64_t addr, size_t size) {
     PIN_SafeCopy(dst, (void *)addr, size);
 }
-
-
 
 #define swap16(n) (((((unsigned short)(n) & 0xFF)) << 8) | (((unsigned short)(n) & 0xFF00) >> 8))
 
@@ -214,5 +216,39 @@ void assert(bool a, const char *info=0) {
 
 
 } // end of namespace util
+
+
+namespace filter {
+
+bool read(int fd, uint64_t addr, size_t size) {
+    bool ret = (fd <= 2 || fd > 10 || addr <= 0x100 || size <= 2 || size >= 1024) // default pass rule
+        || (config::read_size_flag && (size < config::read_size_min || size > config::read_size_max))
+        || (config::read_fd_flag && (fd < config::read_fd_min || fd > config::read_fd_max));
+    if (ret) {
+        logger::verbose("filter read: fd: %d, addr: %lx, size: %lx\n", fd, addr, size);
+    }
+    return ret;
+}
+
+
+bool function(const char *name) {
+    size_t n = sizeof(config::functions) / sizeof(const char *);
+
+    for (size_t i = 0; i < n; ++i) {
+        if (strcmp(config::functions[i], name) == 0) {
+            logger::verbose("filter function: %s\n", name);
+            return true;
+        }
+    }
+    return false;
+}
+
+bool point(const char *point) {
+    if (point == util::entry && !config::use_entry) return true;
+    if (point == util::exit && !config::use_exit) return true;
+    return false;
+}
+
+}// end of namespace filter
 
 #endif

@@ -10,62 +10,6 @@
 #include "config.hpp"
 
 
-std::vector<std::vector<std::string> > functraces;
-std::vector<int> threadIds;
-std::vector<std::string> plts;
-
-
-void printTrace(int index) {
-    std::vector<std::string>::iterator it;
-    for (it = functraces[index].begin(); it != functraces[index].end(); ++it) {
-        logger::debug("%s -> ", (*it).c_str());
-    }
-    logger::debug("\n");
-}
-
-
-void function_entry(int threadId, const std::string* name) {
-    if (*name == config::start_entry) monitor::start();
-    if (monitor::invalid()) return;
-    if (name->find("@plt") != std::string::npos) {
-        plts.push_back(*name);
-        logger::debug("thread id: %d, enter function: %s\n", threadId, name->c_str());
-        return;
-    }
-    const int size = threadIds.size();
-    std::vector<int>::iterator it = find(threadIds.begin(), threadIds.end(), threadId);
-    int index = it - threadIds.begin();
-    if (index == size) {
-        threadIds.push_back(threadId);
-        functraces.push_back(std::vector<std::string>());
-    }
-    functraces[index].push_back(*name);
-    logger::debug("thread id: %d, enter function: %s\n", threadId, name->c_str());
-    logger::info("enter\t%s\n", name->c_str());
-    // printTrace(index);
-}
-
-
-void function_exit(int threadId, const std::string* name) {
-    if (monitor::invalid()) return;
-    std::vector<int>::iterator it = find(threadIds.begin(), threadIds.end(), threadId);
-    unsigned int index = it - threadIds.begin();
-    if (index == threadIds.size()) { logger::debug("error\n"); return;}
-
-    // while (!functraces[index].empty() && functraces[index].back() != *name) {
-    //     functraces[index].pop_back();    
-    // }
-
-    util::assert(functraces[index].back() == *name);
-    functraces[index].pop_back();
-    
-    logger::debug("thread id: %d, exit  function: %s\n", threadId, name->c_str());
-    logger::info("exit\t%s\n", name->c_str());
-        // printTrace(index);
-    if (*name == config::start_entry) monitor::end();
-}
-
-
 // INS_OperandImmediate
 // INS_OperandRead
 // INS_OperandReadAndWritten
@@ -191,6 +135,7 @@ void Instruction(Ins ins) {
 }
 
 
+
 void Image(IMG img, VOID *v) {
     std::string imgName = IMG_Name(img);
     if (config::mode == "release") {
@@ -198,36 +143,53 @@ void Image(IMG img, VOID *v) {
         if (IMG_IsMainExecutable(img)) {
             for (SEC sec = IMG_SecHead(img); SEC_Valid(sec); sec = SEC_Next(sec)) {
                 for (Rtn rtn = SEC_RtnHead(sec); rtn.Valid(); rtn = rtn.Next()) {
-                if (rtn.isArtificial()) continue;
+                    if (rtn.isArtificial()) continue;
                     std::string *rtnName = new std::string(rtn.Name());
-                    
+                    if (filter::function(rtnName->c_str())) continue;
                     logger::verbose("function %s\n", rtnName->c_str());
                     
                     rtn.Open();
 
-                    RTN_InsertCall(rtn, IPOINT_BEFORE, (AFUNPTR)function_entry, 
+                    if (rtnName->find("@plt") != std::string::npos) {
+                        if (*rtnName == "recv@plt" || *rtnName == "recvfrom@plt") {
+                            RTN_InsertCall(rtn, IPOINT_BEFORE, (AFUNPTR)Recv_point,
+                                IARG_ADDRINT, rtnName,
+                                IARG_ADDRINT, util::entry,
+                                IARG_FUNCARG_ENTRYPOINT_VALUE, 0, // socket
+                                IARG_FUNCARG_ENTRYPOINT_VALUE, 1, // buf
+                                IARG_FUNCARG_ENTRYPOINT_VALUE, 2, // len
+                                IARG_END);
+                            RTN_InsertCall(rtn, IPOINT_AFTER, (AFUNPTR)Recv_point,
+                                IARG_ADDRINT, rtnName,
+                                IARG_ADDRINT, util::exit,
+                                IARG_FUNCARG_ENTRYPOINT_VALUE, 0, // socket
+                                IARG_FUNCARG_ENTRYPOINT_VALUE, 1, // buf
+                                IARG_FUNCARG_ENTRYPOINT_VALUE, 2, // len
+                                IARG_END);
+                        } else if (*rtnName == "memcpy@plt") { // memcpy use xmm registers to copy
+                            RTN_InsertCall(rtn, IPOINT_BEFORE, (AFUNPTR)Memcpy_point,
+                                IARG_ADDRINT, rtnName,
+                                IARG_ADDRINT, util::entry,
+                                IARG_FUNCARG_ENTRYPOINT_VALUE, 0, // dest
+                                IARG_FUNCARG_ENTRYPOINT_VALUE, 1, // src
+                                IARG_FUNCARG_ENTRYPOINT_VALUE, 2, // len
+                                IARG_END);
+                        }
+                        RTN_InsertCall(rtn, IPOINT_BEFORE, (AFUNPTR)function_entry, 
                         IARG_THREAD_ID,
                         IARG_PTR, rtnName, IARG_END);
+                    } else {
+                        RTN_InsertCall(rtn, IPOINT_BEFORE, (AFUNPTR)function_entry, 
+                            IARG_THREAD_ID,
+                            IARG_PTR, rtnName, IARG_END);
 
-                    // if (*rtnName == "recv") {
-                    //     RTN_InsertCall(rtn, IPOINT_BEFORE, (AFUNPTR)Recv_entry,
-                    //         IARG_FUNCARG_ENTRYPOINT_VALUE, 0, // socket
-                    //         IARG_FUNCARG_ENTRYPOINT_VALUE, 1, // buf
-                    //         IARG_FUNCARG_ENTRYPOINT_VALUE, 2, // len
-                    //         IARG_END);
-                    //     RTN_InsertCall(rtn, IPOINT_AFTER, (AFUNPTR)Recv_exit,
-                    //         IARG_FUNCARG_ENTRYPOINT_VALUE, 0, // socket
-                    //         IARG_FUNCARG_ENTRYPOINT_VALUE, 1, // buf
-                    //         IARG_FUNCARG_ENTRYPOINT_VALUE, 2, // len
-                    //         IARG_END);
-                    // }
+                        RTN_InsertCall(rtn, IPOINT_AFTER, (AFUNPTR)function_exit, 
+                            IARG_THREAD_ID,
+                            IARG_PTR, rtnName, IARG_END);
 
-                    RTN_InsertCall(rtn, IPOINT_AFTER, (AFUNPTR)function_exit, 
-                        IARG_THREAD_ID,
-                        IARG_PTR, rtnName, IARG_END);
-                
-                    for(Ins ins = rtn.InsHead(); ins.Valid(); ins = ins.Next()) {
-                        Instruction(ins);
+                        for(Ins ins = rtn.InsHead(); ins.Valid(); ins = ins.Next()) {
+                            Instruction(ins);
+                        }
                     }
 
                     rtn.Close();
@@ -236,35 +198,32 @@ void Image(IMG img, VOID *v) {
         } else if (imgName.find("libc") != std::string::npos) {
             for (SEC sec = IMG_SecHead(img); SEC_Valid(sec); sec = SEC_Next(sec)) {
                 for (Rtn rtn = SEC_RtnHead(sec); rtn.Valid(); rtn = rtn.Next()) {
+                    if (rtn.isArtificial()) continue;
                     std::string *rtnName = new std::string(rtn.Name());
+                    if (filter::function(rtnName->c_str())) continue;
                     
                     logger::verbose("function %s\n", rtnName->c_str());
 
                     rtn.Open();
-                    if (*rtnName == "recv") {
-                        RTN_InsertCall(rtn, IPOINT_BEFORE, (AFUNPTR)Recv_entry,
+                    if (*rtnName == "recv"|| *rtnName == "recvfrom") {
+                        RTN_InsertCall(rtn, IPOINT_BEFORE, (AFUNPTR)Recv_point,
+                            IARG_ADDRINT, rtnName,
+                            IARG_ADDRINT, util::entry,
                             IARG_FUNCARG_ENTRYPOINT_VALUE, 0, // socket
                             IARG_FUNCARG_ENTRYPOINT_VALUE, 1, // buf
                             IARG_FUNCARG_ENTRYPOINT_VALUE, 2, // len
                             IARG_END);
-                        RTN_InsertCall(rtn, IPOINT_AFTER, (AFUNPTR)Recv_exit,
-                            IARG_FUNCARG_ENTRYPOINT_VALUE, 0, // socket
-                            IARG_FUNCARG_ENTRYPOINT_VALUE, 1, // buf
-                            IARG_FUNCARG_ENTRYPOINT_VALUE, 2, // len
-                            IARG_END);
-                    } else if (*rtnName == "recvfrom") {
-                        RTN_InsertCall(rtn, IPOINT_BEFORE, (AFUNPTR)Recvfrom_entry,
-                            IARG_FUNCARG_ENTRYPOINT_VALUE, 0, // socket
-                            IARG_FUNCARG_ENTRYPOINT_VALUE, 1, // buf
-                            IARG_FUNCARG_ENTRYPOINT_VALUE, 2, // len
-                            IARG_END);
-                        RTN_InsertCall(rtn, IPOINT_AFTER, (AFUNPTR)Recvfrom_exit,
+                        RTN_InsertCall(rtn, IPOINT_AFTER, (AFUNPTR)Recv_point,
+                            IARG_ADDRINT, rtnName,
+                            IARG_ADDRINT, util::exit,
                             IARG_FUNCARG_ENTRYPOINT_VALUE, 0, // socket
                             IARG_FUNCARG_ENTRYPOINT_VALUE, 1, // buf
                             IARG_FUNCARG_ENTRYPOINT_VALUE, 2, // len
                             IARG_END);
                     } else if (*rtnName == "memcpy") { // memcpy use xmm registers to copy
-                        RTN_InsertCall(rtn, IPOINT_BEFORE, (AFUNPTR)Memcpy_entry,
+                        RTN_InsertCall(rtn, IPOINT_BEFORE, (AFUNPTR)Memcpy_point,
+                            IARG_ADDRINT, rtnName,
+                            IARG_ADDRINT, util::entry,
                             IARG_FUNCARG_ENTRYPOINT_VALUE, 0, // dest
                             IARG_FUNCARG_ENTRYPOINT_VALUE, 1, // src
                             IARG_FUNCARG_ENTRYPOINT_VALUE, 2, // len
@@ -339,8 +298,8 @@ int main(int argc, char * argv[]) {
     // PIN_SetSyntaxIntel();
     IMG_AddInstrumentFunction(Image, 0);
     if (config::syscall) {
-        PIN_AddSyscallEntryFunction(Syscall_entry, 0);
-        PIN_AddSyscallExitFunction(Syscall_exit, 0);
+        if (config::use_entry) PIN_AddSyscallEntryFunction(Syscall_point, (void*)util::entry);
+        if (config::use_exit)  PIN_AddSyscallExitFunction(Syscall_point , (void*)util::exit);
     }
         
     PIN_StartProgram();

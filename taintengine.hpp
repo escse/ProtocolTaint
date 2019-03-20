@@ -14,7 +14,7 @@ private:
     struct MemI {
         uint64_t start;
         size_t size;
-        uint8_t bytes[128];
+        uint8_t bytes[config::maxsize];
 
         uint64_t begin() {
             return start;
@@ -84,7 +84,11 @@ public:
 
     // use in exit entry function
     void taint(uint64_t start, size_t size) {
-        logger::print("start: %lx, size: %lx\n", start, size);
+        logger::debug("taint start: %lx, size: %lx\n", start, size);
+        if (size > config::maxsize) {
+            logger::print("taint size: %lx exceed maxsize: %lx\n", size, config::maxsize);
+            size = config::maxsize;
+        }
         for (size_t i = 0; i < inits.size(); ++i) { // merge continuous taint memory
             if (start == inits[i].begin()) {
                 inits[i].size = size; // TODO
@@ -103,6 +107,10 @@ public:
     }
 
     uint64_t value(uint64_t addr, size_t size, bool bigendian) {
+        if (size > config::maxsize) {
+            logger::print("value size: %lx exceed maxsize: %lx\n", size, config::maxsize);
+            size = config::maxsize;
+        }
         for (size_t i = 0; i < inits.size(); ++i) {
             if (inits[i].valid(addr)) {
                 return inits[i].value(addr - inits[i].begin(), size, bigendian);
@@ -618,6 +626,10 @@ uint64_t src(uint64_t addr) {
 // init
 // use in exit entry point
 void Init(size_t start, size_t size) {
+    if (size > config::maxsize) {
+        logger::print("Init size: %lx\n", size);
+        return;
+    }
     inits.taint(start, size);
     mems.taint(start, size);
 }

@@ -8,90 +8,108 @@
 // IARG_MEMORYWRITE_SIZE
 // IARG_FUNCARG_ENTRYPOINT_VALUE, 0 函数参数
 
+
+std::vector<std::vector<std::string> > functraces;
+std::vector<int> threadIds;
+std::vector<std::string> plts;
+
+
+void printTrace(int index) {
+    std::vector<std::string>::iterator it;
+    for (it = functraces[index].begin(); it != functraces[index].end(); ++it) {
+        logger::debug("%s -> ", (*it).c_str());
+    }
+    logger::debug("\n");
+}
+
+
+void function_entry(int threadId, const std::string* name) {
+    if (*name == config::start_entry) monitor::start();
+    if (monitor::invalid()) return;
+    if (name->find("@plt") != std::string::npos) {
+        plts.push_back(*name);
+        logger::debug("thread id: %d, enter function: %s\n", threadId, name->c_str());
+        logger::debug("thread id: %d, exit function: %s\n", threadId, name->c_str());
+        return;
+    }
+    const int size = threadIds.size();
+    std::vector<int>::iterator it = find(threadIds.begin(), threadIds.end(), threadId);
+    int index = it - threadIds.begin();
+    if (index == size) {
+        threadIds.push_back(threadId);
+        functraces.push_back(std::vector<std::string>());
+    }
+    functraces[index].push_back(*name);
+    logger::debug("thread id: %d, enter function: %s\n", threadId, name->c_str());
+    logger::info("enter\t%s\n", name->c_str());
+    // printTrace(index);
+}
+
+
+void function_exit(int threadId, const std::string* name) {
+    if (monitor::invalid()) return;
+    std::vector<int>::iterator it = find(threadIds.begin(), threadIds.end(), threadId);
+    unsigned int index = it - threadIds.begin();
+    if (index == threadIds.size()) { logger::debug("error\n"); return;}
+
+    // while (!functraces[index].empty() && functraces[index].back() != *name) {
+    //     functraces[index].pop_back();    
+    // }
+
+    util::assert(functraces[index].back() == *name);
+    functraces[index].pop_back();
+    
+    logger::debug("thread id: %d, exit  function: %s\n", threadId, name->c_str());
+    logger::info("exit\t%s\n", name->c_str());
+        // printTrace(index);
+    if (*name == config::start_entry) monitor::end();
+}
+
 const char *printinfo[2][2] = {{ "", "+  taint  +"}, {"- untaint -", "* retaint *"}};
 
 
-void Syscall_entry(THREADID thread_id, CONTEXT *ctx, SYSCALL_STANDARD std, void *v) {
+void Syscall_point(THREADID thread_id, CONTEXT *ctx, SYSCALL_STANDARD std, void *v) {
     if (!monitor::valid()) return;
+    const char *point = (const char *)v;
+    if (filter::point(point)) return;
     if (PIN_GetSyscallNumber(ctx, std) == __NR_read) {
         int fd          = static_cast<int>((PIN_GetSyscallArgument(ctx, std, 0)));
         uint64_t start  = static_cast<uint64_t>((PIN_GetSyscallArgument(ctx, std, 1)));
         size_t size     = static_cast<size_t>((PIN_GetSyscallArgument(ctx, std, 2)));
-        logger::print("enter read: fd: %d, start: %lx, size: %lx\n", fd, start, size);
-        // if (fd <= 3 || fd > 6 || start <= 0x100 || size <= 2 || size >= 1024) return; // default pass rule
-        // if (config::read_size_flag && (size < config::read_size_min || size > config::read_size_max)) {
-        //     return;
-        // }
-        // logger::debug("[TAINT]\t %lx bytes tainted from 0x%lx to 0x%lx (via read fd: %d)\n", size, start, start+size, fd);
-        // TaintEngine::Init(start, size);
-    }
-}
-
-
-void Syscall_exit(THREADID thread_id, CONTEXT *ctx, SYSCALL_STANDARD std, void *v) {
-    if (!monitor::valid()) return;
-    if (PIN_GetSyscallNumber(ctx, std) == __NR_read) {
-        int fd          = static_cast<int>((PIN_GetSyscallArgument(ctx, std, 0)));
-        uint64_t start  = static_cast<uint64_t>((PIN_GetSyscallArgument(ctx, std, 1)));
-        size_t size     = static_cast<size_t>((PIN_GetSyscallArgument(ctx, std, 2)));
-        logger::print("exit read: fd: %d, start: %lx, size: %lx\n", fd, start, size);
-        // if (fd <= 3 || fd > 6 || start <= 0x100 || size <= 2 || size >= 1024) return; // default pass rule
-        // if (config::read_size_flag && (size < config::read_size_min || size > config::read_size_max)) {
-        //     return;
-        // }
-        logger::debug("[TAINT]\t %lx bytes tainted from 0x%lx to 0x%lx (via read fd: %d)\n", size, start, start+size, fd);
+        if (filter::read(fd, start, size)) return;
+        logger::print("%s read: fd: %d, start: %lx, size: %lx\n", point, fd, start, size);
+        logger::debug("[TAINT]\t %lx bytes tainted from 0x%lx to 0x%lx (via read %s fd: %d)\n", size, start, start+size, point, fd);
         
-        // TaintEngine::Init(start, size);
+        TaintEngine::Init(start, size);
     }
 }
 
 
-void Recvfrom_entry(int sock, UINT64 start, size_t size) {
-    logger::print("enter recvfrom: sock: %d, recvfrom: start %lx, size: %lx\n", sock, start, size);
-    if (!monitor::valid()) return;
-    logger::debug("[TAINT]\t %lx bytes tainted from 0x%lx to 0x%lx (via recvfrom sock: %d)\n", size, start, start+size, sock);
-    // TaintEngine::Init(start, size); // point to self
-}
 
-void Recvfrom_exit(int sock, UINT64 start, size_t size) {
-    logger::print("exit recvfrom: sock: %d, recvfrom: start %lx, size: %lx\n", sock, start, size);
-    if (!monitor::valid()) return;
-    logger::debug("[TAINT]\t %lx bytes tainted from 0x%lx to 0x%lx (via recvfrom sock: %d)\n", size, start, start+size, sock);
-    // TaintEngine::Init(start, size); // point to self
+void Recv_point(const std::string* name, const char *point, int sock, UINT64 start, size_t size) {
+    if (!monitor::valid() || filter::point(point) || filter::read(sock, start, size)) return;
+    logger::print("%s %s: sock: %d, start %lx, size: %lx\n", point, name->c_str(), sock, start, size);
+    logger::debug("[TAINT]\t %lx bytes tainted from 0x%lx to 0x%lx (via %s(%s) sock: %d)\n", size, start, start+size, name->c_str(), point, sock);
+    TaintEngine::Init(start, size);
 }
 
 
-void Recv_entry(int sock, UINT64 start, size_t size) {
-    logger::print("enter recv: sock: %d, start %lx, size: %lx\n", sock, start, size);
-    if (!monitor::valid()) return;
-    logger::debug("[TAINT]\t %lx bytes tainted from 0x%lx to 0x%lx (via recv sock: %d)\n", size, start, start+size, sock);
-}
-
-
-void Recv_exit(int sock, UINT64 start, size_t size) {
-    logger::print("exit recv: sock: %d, start %lx, size: %lx\n", sock, start, size);
-    if (!monitor::valid()) return;
-    logger::debug("[TAINT]\t %lx bytes tainted from 0x%lx to 0x%lx (via recv sock: %d)\n", size, start, start+size, sock);
-    // TaintEngine::Init(start, size); // point to self
-}
-
-
-void Memcpy_entry(UINT64 dst, UINT64 src, size_t size) {
-    logger::print("enter memcpy: dst %lx, src: %x, size: %lx\n", dst, src, size);
-    if (!monitor::valid()) return;
-    logger::debug("[COPY]\t %lx bytes from 0x%lx to 0x%lx (via memcpy)\n", size, src, dst);
+void Memcpy_point(const std::string* name, const char *point, UINT64 dst, UINT64 src, size_t size) {
+    if (!monitor::valid() || filter::point(point)) return;
     
-    for (size_t i = 0; i < size; ++i) {
+    for (size_t i = 0; i < size;) {
         if (TaintEngine::isTainted(src + i)) {
-            TaintEngine::mems.taint(dst + i, src + i, 1, false);
+            size_t s = i;
+            while (i < size && TaintEngine::isTainted(src + i)) ++i;
+            logger::print("%s %s: dst %lx, src: %lx, size: %lx\n", point, name->c_str(), dst + s, src + s, i - s);
+            logger::debug("[COPY]\t %lx bytes from 0x%lx to 0x%lx (via %s %s)\n", i - s, src + s, dst + s, name->c_str(), point);
+            TaintEngine::Init(dst + s, i - s);
+        } else {
+            ++i;
         }
     }
 }
 
-
-void EveryInst(const std::string* assembly) { // # TODO
-    if (monitor::invalid()) return;
-}
 
 // reg <- mem
 void ReadMem(const std::string* assembly, unsigned long address, REG reg, UINT64 mem, USIZE size) {
