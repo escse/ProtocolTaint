@@ -11,3 +11,11 @@ ProtocolTaint通过代码动态分析的方法对二进制协议可执行文件�
 ![结果](https://github.com/escse/ProtocolTaint/blob/master/graph.png)
 
 可以从中总结出字段[00 01]{02 03 04 05}[06][07][08 09][10 11]
+
+
+### 参考教程
+污点分析 http://shell-storm.org/blog/Taint-analysis-and-pattern-matching-with-Pin/
+
+LD_PRELOAD http://samanbarghi.com/blog/2014/09/05/how-to-wrap-a-system-call-libc-function-in-linux/
+
+    https://www.technovelty.org/c/using-ld_preload-to-override-a-function.html

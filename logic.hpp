@@ -4,6 +4,7 @@
 #include "pin.H"
 #include "taintengine.hpp"
 #include "util.hpp"
+#include "pinobject.hpp"
 
 // IARG_MEMORYWRITE_SIZE
 // IARG_FUNCARG_ENTRYPOINT_VALUE, 0 函数参数
@@ -28,8 +29,8 @@ void function_entry(int threadId, const std::string* name) {
     if (monitor::invalid()) return;
     if (name->find("@plt") != std::string::npos) {
         plts.push_back(*name);
-        logger::debug("thread id: %d, enter function: %s\n", threadId, name->c_str());
-        logger::debug("thread id: %d, exit function: %s\n", threadId, name->c_str());
+        logger::debug("thread id: %d, enter function: %s\n", threadId, util::demangle(name->c_str()));
+        logger::debug("thread id: %d, exit function: %s\n", threadId, util::demangle(name->c_str()));
         return;
     }
     const int size = threadIds.size();
@@ -40,8 +41,8 @@ void function_entry(int threadId, const std::string* name) {
         functraces.push_back(std::vector<std::string>());
     }
     functraces[index].push_back(*name);
-    logger::debug("thread id: %d, enter function: %s\n", threadId, name->c_str());
-    logger::info("enter\t%s\n", name->c_str());
+    logger::debug("thread id: %d, enter function: %s\n", threadId, util::demangle(name->c_str()));
+    logger::info("enter\t%s\n", util::demangle(name->c_str()));
     // printTrace(index);
 }
 
@@ -59,8 +60,8 @@ void function_exit(int threadId, const std::string* name) {
     util::assert(functraces[index].back() == *name);
     functraces[index].pop_back();
     
-    logger::debug("thread id: %d, exit  function: %s\n", threadId, name->c_str());
-    logger::info("exit\t%s\n", name->c_str());
+    logger::debug("thread id: %d, exit  function: %s\n", threadId, util::demangle(name->c_str()));
+    logger::info("exit\t%s\n", util::demangle(name->c_str()));
         // printTrace(index);
     if (*name == config::start_entry) monitor::end();
 }
@@ -71,38 +72,124 @@ const char *printinfo[2][2] = {{ "", "+  taint  +"}, {"- untaint -", "* retaint 
 void Syscall_point(THREADID thread_id, CONTEXT *ctx, SYSCALL_STANDARD std, void *v) {
     if (!monitor::valid()) return;
     const char *point = (const char *)v;
-    if (filter::point(point)) return;
-    if (PIN_GetSyscallNumber(ctx, std) == __NR_read) {
+    ADDRINT number = PIN_GetSyscallNumber(ctx, std);
+    logger::print("system number: 0x%lx in %s\n", number, point);
+    if (number == __NR_read) {
         int fd          = static_cast<int>((PIN_GetSyscallArgument(ctx, std, 0)));
         uint64_t start  = static_cast<uint64_t>((PIN_GetSyscallArgument(ctx, std, 1)));
         size_t size     = static_cast<size_t>((PIN_GetSyscallArgument(ctx, std, 2)));
         if (filter::read(fd, start, size)) return;
-        logger::print("%s read: fd: %d, start: %lx, size: %lx\n", point, fd, start, size);
-        logger::debug("[TAINT]\t %lx bytes tainted from 0x%lx to 0x%lx (via read %s fd: %d)\n", size, start, start+size, point, fd);
-        
+        logger::print("%s read: fd: %d, start: 0x%lx, size: 0x%lx\n", point, fd, start, size);
+        if (!filter::taint_start()) return;
+        logger::debug("[TAINT]\t 0x%lx bytes tainted from 0x%lx to 0x%lx (via read %s fd: %d)\n", size, start, start+size, point, fd);
         TaintEngine::Init(start, size);
     }
 }
 
 
+void read_point(const char *point, int fd, uint64_t buffer, size_t length, ssize_t ret) {
+    static int _fd;
+    static uint64_t _buffer;
+    static size_t _length;
+    if (!monitor::valid() || !filter::taint_start()) return;
 
-void Recv_point(const std::string* name, const char *point, int sock, UINT64 start, size_t size) {
-    if (!monitor::valid() || filter::point(point) || filter::read(sock, start, size)) return;
-    logger::print("%s %s: sock: %d, start %lx, size: %lx\n", point, name->c_str(), sock, start, size);
-    logger::debug("[TAINT]\t %lx bytes tainted from 0x%lx to 0x%lx (via %s(%s) sock: %d)\n", size, start, start+size, name->c_str(), point, sock);
-    TaintEngine::Init(start, size);
+    if (point == filter::entry) {
+        _fd = fd;
+        _buffer = buffer;
+        _length = length;
+    }
+
+    if (filter::read(_fd, _buffer, _length)) return;
+
+    if (point == filter::exit) {
+        logger::print("read(fd: %d, buffer: %p, length: 0x%lx) => %zd\n", _fd, _buffer, _length, ret);
+        logger::debug("[TAINT]\t 0x%lx bytes tainted from 0x%lx to 0x%lx (via recv socket: %d)\n", _length, _buffer, _buffer+_length, _fd);
+        TaintEngine::Init(_buffer, _length);
+    }
 }
 
 
-void Memcpy_point(const std::string* name, const char *point, UINT64 dst, UINT64 src, size_t size) {
-    if (!monitor::valid() || filter::point(point)) return;
+void recv_point(const char *point, int socket, uint64_t buffer, size_t length, int flags, ssize_t ret) {
+    static int _socket;
+    static uint64_t _buffer;
+    static size_t _length;
+    static int _flags;
+    if (!monitor::valid() || !filter::taint_start()) return;
+
+    if (point == filter::entry) {
+        _socket = socket;
+        _buffer = buffer;
+        _length = length;
+    }
+    if (filter::read(_socket, _buffer, _length)) return;
+    
+    if (point == filter::exit) {
+        logger::print("recv(socket: %d, buffer: %p, length: 0x%lx, flags: %d) => %zd\n", _socket, _buffer, _length, _flags, ret);
+        logger::debug("[TAINT]\t 0x%lx bytes tainted from 0x%lx to 0x%lx (via recv socket: %d)\n", _length, _buffer, _buffer+_length, _socket);
+        TaintEngine::Init(_buffer, _length);
+    }
+}
+
+
+void recvfrom_point(const char *point, int socket, uint64_t buffer, size_t length, int flags, struct sockaddr *address, socklen_t *address_len, ssize_t ret){
+    static int _socket;
+    static uint64_t _buffer;
+    static size_t _length;
+    static int _flags;
+    if (!monitor::valid() || !filter::taint_start()) return;
+
+    if (point == filter::entry) {
+        _socket = socket;
+        _buffer = buffer;
+        _length = length;
+    }
+
+    if (filter::read(_socket, _buffer, _length)) return;
+    
+    if (point == filter::exit) {
+        logger::print("recvfrom(socket: %d, buffer: %p, length: 0x%lx, flags: %d) => %zd\n", _socket, _buffer, _length, _flags, ret);
+        logger::debug("[TAINT]\t 0x%lx bytes tainted from 0x%lx to 0x%lx (via recvfrom socket: %d)\n", _length, _buffer, _buffer+_length, _socket);
+        TaintEngine::Init(_buffer, _length);
+    }
+}
+
+
+void recvmsg_point(const char *point, int socket, struct msghdr* mhdr, int flags, ssize_t ret) {
+    static int _socket;
+    static struct msghdr* _mhdr;
+    static int _flags;
+    static uint64_t _buffer;
+    if (!monitor::valid() || !filter::taint_start()) return;
+
+    if (point == filter::entry) {
+        _socket = socket;
+        _mhdr = mhdr;
+        _flags = flags;
+        _buffer = (uint64_t) mhdr->msg_iov[0].iov_base;
+        // size_t len = message->msg_iovlen;
+    }
+
+    if (point == filter::exit) {
+        ssize_t _length = ret;
+        if (filter::read(_socket, _buffer, _length)) return;
+        if (_length > 0) {
+            logger::print("recvmsg(socket: %d, mhdr: %p, flags: %d) => %zd\n", _socket, _mhdr, _flags, _length);
+            logger::debug("[TAINT]\t 0x%lx bytes tainted from 0x%lx to 0x%lx (via recvmsg socket: %d)\n", _length, _buffer, _buffer+_length, _socket);
+            TaintEngine::Init(_buffer, _length);
+        }
+    }
+}
+
+
+void memcpy_point(const char *point, uint64_t dst, UINT64 src, size_t size) {
+    if (!monitor::valid()) return;
     
     for (size_t i = 0; i < size;) {
         if (TaintEngine::isTainted(src + i)) {
             size_t s = i;
             while (i < size && TaintEngine::isTainted(src + i)) ++i;
-            logger::print("%s %s: dst %lx, src: %lx, size: %lx\n", point, name->c_str(), dst + s, src + s, i - s);
-            logger::debug("[COPY]\t %lx bytes from 0x%lx to 0x%lx (via %s %s)\n", i - s, src + s, dst + s, name->c_str(), point);
+            logger::print("memcpy(dst: %p, src: %p, size: 0x%lx)\n", dst + s, src + s, i - s);
+            logger::debug("[COPY]\t 0x%lx bytes from 0x%lx to 0x%lx (via memcpy)\n", i - s, src + s, dst + s);
             TaintEngine::Init(dst + s, i - s);
         } else {
             ++i;
@@ -120,14 +207,14 @@ void ReadMem(const std::string* assembly, unsigned long address, REG reg, UINT64
     debug::log(address, assembly->c_str());
     ADDRINT value = util::Value(mem, size);
     if (taint_r) { // retaint
-        logger::debug("[Reg <- Mem %s]\t%lx: %s\t addr: %lx value: (%lx, %lx)\n", printinfo[taint_w][taint_r], address, assembly->c_str(), mem, TaintEngine::src(mem), value);
+        logger::debug("[Reg <- Mem %s]\t0x%lx: %s\t addr: 0x%lx value: (0x%lx, 0x%lx)\n", printinfo[taint_w][taint_r], address, assembly->c_str(), mem, TaintEngine::src(mem), value);
         logger::debug("%s", TaintEngine::debug(mem));
         TaintEngine::move(reg, mem, size);
         logger::debug("%s", TaintEngine::debug(reg));
 
-        logger::info("Instruction %lx: %s\t%s\t%lx\n", address, assembly->c_str(), TaintEngine::offsets(mem), value);
+        logger::info("Instruction 0x%lx: %s\t%s\t0x%lx\n", address, assembly->c_str(), TaintEngine::offsets(mem), value);
     } else if (taint_w && !taint_r) { // untaint
-        logger::debug("[Reg <- Mem %s]\t%lx: %s\t addr: %lx\n", printinfo[taint_w][taint_r], address, assembly->c_str(), mem);
+        logger::debug("[Reg <- Mem %s]\t0x%lx: %s\t addr: 0x%lx\n", printinfo[taint_w][taint_r], address, assembly->c_str(), mem);
         logger::debug("%s", TaintEngine::debug(reg));
 
         TaintEngine::remove(reg);
@@ -143,14 +230,14 @@ void WriteMem(const std::string* assembly, unsigned long address, UINT64 mem, RE
     if (!taint_w && !taint_r) return;
     debug::log(address, assembly->c_str());
     if (taint_r) { // retaint
-        logger::debug("[Mem <- Reg %s]\t%lx: %s\t addr: %lx value: (%lx, %lx)\n", printinfo[taint_w][taint_r], address, assembly->c_str(), mem, TaintEngine::src(reg), value);
+        logger::debug("[Mem <- Reg %s]\t0x%lx: %s\t addr: 0x%lx value: (0x%lx, 0x%lx)\n", printinfo[taint_w][taint_r], address, assembly->c_str(), mem, TaintEngine::src(reg), value);
         logger::debug("%s", TaintEngine::debug(reg));
         TaintEngine::move(mem, reg, size); // change src
         logger::debug("%s", TaintEngine::debug(mem));
 
-        logger::info("Instruction %lx: %s\t%s\t%lx\n", address, assembly->c_str(), TaintEngine::offsets(reg), value);
+        logger::info("Instruction 0x%lx: %s\t%s\t0x%lx\n", address, assembly->c_str(), TaintEngine::offsets(reg), value);
     } else if (taint_w && !taint_r) { // untaint
-        logger::debug("[Mem <- Reg %s]\t%lx: %s\t addr: %lx\n", printinfo[taint_w][taint_r], address, assembly->c_str(), mem);
+        logger::debug("[Mem <- Reg %s]\t0x%lx: %s\t addr: 0x%lx\n", printinfo[taint_w][taint_r], address, assembly->c_str(), mem);
         logger::debug("before: %s", TaintEngine::debug(mem));
 
         TaintEngine::remove(mem);
@@ -166,14 +253,14 @@ void spreadReg(const std::string* assembly, unsigned long address, REG reg_w, RE
     if (!taint_w && !taint_r) return;
     debug::log(address, assembly->c_str());
     if (taint_r) { // retaint
-        logger::debug("[Reg <- Reg %s]\t%lx: %s value: (%lx, %lx)\n", printinfo[taint_w][taint_r], address, assembly->c_str(), TaintEngine::src(reg_r), value);
+        logger::debug("[Reg <- Reg %s]\t0x%lx: %s value: (0x%lx, 0x%lx)\n", printinfo[taint_w][taint_r], address, assembly->c_str(), TaintEngine::src(reg_r), value);
         logger::debug("%s", TaintEngine::debug(reg_r));
         TaintEngine::move(reg_w, reg_r);
         logger::debug("%s", TaintEngine::debug(reg_w));
 
-        logger::info("Instruction %lx: %s\t%s\t%lx\n", address, assembly->c_str(), TaintEngine::offsets(reg_r), value);
+        logger::info("Instruction 0x%lx: %s\t%s\t0x%lx\n", address, assembly->c_str(), TaintEngine::offsets(reg_r), value);
     } else if (taint_w && !taint_r) { // untaint
-        logger::debug("[Reg <- Reg %s]\t%lx: %s\n", printinfo[taint_w][taint_r], address, assembly->c_str());
+        logger::debug("[Reg <- Reg %s]\t0x%lx: %s\n", printinfo[taint_w][taint_r], address, assembly->c_str());
         logger::debug("before: %s", TaintEngine::debug(reg_w));
 
         TaintEngine::remove(reg_w);
@@ -190,14 +277,14 @@ void spreadMem(const std::string* assembly, unsigned long address, UINT64 mem_w,
     debug::log(address, assembly->c_str());
     ADDRINT value = util::Value(mem_r, size);
     if (taint_r) { // retaint
-        logger::debug("[Mem <- Mem %s]\t%lx: %s\t mem_w: %lx mem_r: %lx value: (%lx, %lx)\n", printinfo[taint_w][taint_r], address, assembly->c_str(), mem_w, mem_r, TaintEngine::src(mem_r), value);
+        logger::debug("[Mem <- Mem %s]\t0x%lx: %s\t mem_w: 0x%lx mem_r: 0x%lx value: (0x%lx, 0x%lx)\n", printinfo[taint_w][taint_r], address, assembly->c_str(), mem_w, mem_r, TaintEngine::src(mem_r), value);
         logger::debug("%s", TaintEngine::debug(mem_r));
         TaintEngine::move(mem_w, mem_r, size);
         logger::debug("%s", TaintEngine::debug(mem_w));
 
-        logger::info("Instruction %lx: %s\t%s\t%lx\n", address, assembly->c_str(), TaintEngine::offsets(mem_r), value);
+        logger::info("Instruction 0x%lx: %s\t%s\t0x%lx\n", address, assembly->c_str(), TaintEngine::offsets(mem_r), value);
     } else if (taint_w && !taint_r) { // untaint
-        logger::debug("[Mem <- Mem %s]\t%lx: %s\t mem_w: %lx mem_r: %lx\n", printinfo[taint_w][taint_r], address, assembly->c_str(), mem_w, mem_r);
+        logger::debug("[Mem <- Mem %s]\t0x%lx: %s\t mem_w: 0x%lx mem_r: 0x%lx\n", printinfo[taint_w][taint_r], address, assembly->c_str(), mem_w, mem_r);
         logger::debug("%s", TaintEngine::debug(mem_w));
 
         TaintEngine::remove(mem_w);
@@ -210,7 +297,7 @@ void deleteReg(const std::string* assembly, unsigned long address, REG reg) {
     if (monitor::invalid()) return;
     if (TaintEngine::isTainted(reg)) {
         debug::log(address, assembly->c_str());
-        logger::debug("[DELETE Reg]\t%lx : %s\n", address, assembly->c_str());
+        logger::debug("[DELETE Reg]\t0x%lx : %s\n", address, assembly->c_str());
         logger::debug("before: %s", TaintEngine::debug(reg));
         logger::debug("\n");
 
@@ -225,7 +312,7 @@ void deleteMem(const std::string* assembly, unsigned long address, UINT64 mem, U
         debug::log(address, assembly->c_str());
         ADDRINT value = util::Value(mem, size);
 
-        logger::debug("[DELETE Mem]\t\t%lx: %s value: %lx\n", address, assembly->c_str(), value);
+        logger::debug("[DELETE Mem]\t\t0x%lx: %s value: 0x%lx\n", address, assembly->c_str(), value);
         logger::debug("%s", TaintEngine::debug(mem));
         logger::debug("\n");
 
@@ -310,19 +397,19 @@ void Op3RegReg(const std::string* assembly, unsigned long address, int opcode, R
     bool taint_r = TaintEngine::isTainted(reg_r);
     if (!taint_w && !taint_r) return;
     debug::log(address, assembly->c_str());
-    logger::debug("[USE RegReg]\t\t%lx: %s value: %lx, opcode:%d\n", address, assembly->c_str(), value_w, opcode);
+    logger::debug("[USE RegReg]\t\t0x%lx: %s value: 0x%lx, opcode:%d\n", address, assembly->c_str(), value_w, opcode);
     
     if (taint_w) {
         logger::debug("%s", TaintEngine::debug(reg_w));
-        logger::info("Instruction %lx: %s\t%s\t%lx\n", address, assembly->c_str(), TaintEngine::offsets(reg_w), value_w);
+        logger::info("Instruction 0x%lx: %s\t%s\t0x%lx\n", address, assembly->c_str(), TaintEngine::offsets(reg_w), value_w);
     }
     if (taint_r) {
         logger::debug("%s", TaintEngine::debug(reg_r));
-        logger::info("Instruction %lx: %s\t%s\t%lx\n", address, assembly->c_str(), TaintEngine::offsets(reg_r), value_r);
+        logger::info("Instruction 0x%lx: %s\t%s\t0x%lx\n", address, assembly->c_str(), TaintEngine::offsets(reg_r), value_r);
     }            
     if (opcode == XED_ICLASS_ADD || opcode == XED_ICLASS_OR) {
         if (TaintEngine::merge(reg_w, reg_r)) {
-            logger::info("Instruction %lx: %s\t%s\t%lx\n", address, assembly->c_str(), TaintEngine::offsets(reg_w), value_w);
+            logger::info("Instruction 0x%lx: %s\t%s\t0x%lx\n", address, assembly->c_str(), TaintEngine::offsets(reg_w), value_w);
         }
     }
     logger::debug("\n");
@@ -351,11 +438,11 @@ void Op3RegImm(const std::string* assembly, unsigned long address, int opcode, R
         } else if (opcode == XED_ICLASS_AND) { // and uncheck
             TaintEngine::and_(reg, imm);
         }
-        logger::debug("[USE RegImm]\t\t%lx: %s value: %lx, opcode: %d, imm: %d\n", address, assembly->c_str(), value, opcode, imm);
+        logger::debug("[USE RegImm]\t\t0x%lx: %s value: 0x%lx, opcode: %d, imm: %d\n", address, assembly->c_str(), value, opcode, imm);
         logger::debug("%s", TaintEngine::debug(reg));
         logger::debug("\n");
 
-        logger::info("Instruction %lx: %s\t%s\t%lx\n", address, assembly->c_str(), TaintEngine::offsets(reg), value);
+        logger::info("Instruction 0x%lx: %s\t%s\t0x%lx\n", address, assembly->c_str(), TaintEngine::offsets(reg), value);
     }   
 }
 
@@ -377,15 +464,15 @@ void Op3RegMem(const std::string* assembly, unsigned long address, int opcode, R
     if (!taint_w && !taint_r) return;
     debug::log(address, assembly->c_str());
     ADDRINT value_r = util::Value(mem, size);
-    logger::debug("[USE RegMem]\t\t%lx: %s value: %lx, opcode: %d\n", address, assembly->c_str(), value_w, opcode); // TODO
+    logger::debug("[USE RegMem]\t\t0x%lx: %s value: 0x%lx, opcode: %d\n", address, assembly->c_str(), value_w, opcode); // TODO
     
     if (taint_w) {
         logger::debug("%s", TaintEngine::debug(reg));
-        logger::info("Instruction %lx: %s\t%s\t%lx\n", address, assembly->c_str(), TaintEngine::offsets(reg), value_w);
+        logger::info("Instruction 0x%lx: %s\t%s\t0x%lx\n", address, assembly->c_str(), TaintEngine::offsets(reg), value_w);
     }
     if (taint_r) {
         logger::debug("%s", TaintEngine::debug(mem));
-        logger::info("Instruction %lx: %s\t%s\t%lx\n", address, assembly->c_str(), TaintEngine::offsets(mem), value_r);
+        logger::info("Instruction 0x%lx: %s\t%s\t0x%lx\n", address, assembly->c_str(), TaintEngine::offsets(mem), value_r);
     }
     logger::debug("\n");
 }
@@ -407,11 +494,11 @@ void Op3MemImm(const std::string* assembly, unsigned long address, int opcode, U
     if (TaintEngine::isTainted(mem)) {
         debug::log(address, assembly->c_str());
         ADDRINT value = util::Value(mem, size);
-        logger::debug("[USE MemImm]\t\t%lx: %s value: %lx, opcode: %d\n", address, assembly->c_str(), value, opcode);
+        logger::debug("[USE MemImm]\t\t0x%lx: %s value: 0x%lx, opcode: %d\n", address, assembly->c_str(), value, opcode);
         logger::debug("%s", TaintEngine::debug(mem));
         logger::debug("\n");
 
-        logger::info("Instruction %lx: %s\t%s\t%lx\n", address, assembly->c_str(), TaintEngine::offsets(mem), value);
+        logger::info("Instruction 0x%lx: %s\t%s\t0x%lx\n", address, assembly->c_str(), TaintEngine::offsets(mem), value);
     }
 }
 

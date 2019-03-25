@@ -188,7 +188,8 @@ for line in lines:
 
 graph = pydot.Dot(graph_type='graph')
 root.trim()
-root = root[0]
+while len(root) == 1:
+    root = root[0]
 graph.add_node(pydot.Node(root.id(), label=root.name()))
 root.construct(graph)
 graph.write_png('graph.png')

@@ -4,7 +4,7 @@
 #include <stdio.h>
 #include <stdarg.h>
 #include <string.h>
-#include "wrapper.hpp"
+#include <cxxabi.h> // for demangle
 #include "config.hpp"
 
 namespace monitor {
@@ -121,9 +121,6 @@ void debug() {
 
 namespace util {
 
-const char *entry = "entry";
-const char *exit = "exit";
-
 inline ADDRINT Value(UINT64 mem, size_t size) { // a bit weird
     ADDRINT value;
     PIN_SafeCopy((void*)(&value), (void *)mem, sizeof(ADDRINT));
@@ -177,36 +174,6 @@ const char *nums(int start, int size) {
     return buf;
 }
 
-std::string Tag(Ins ins, size_t opcount) {
-    std::string tag = "";
-    for (size_t i = 0; i < opcount; ++i) {
-        if (ins.isOpReg(i)) {
-            tag += "Reg ";
-        }
-        if (ins.isOpMem(i)) {
-            tag += "Mem ";
-        }
-        if (ins.isOpImm(i)) {
-            tag += "Imm ";
-        }
-        if (ins.isOpImplicit(i)) {
-            tag += "Implicit ";
-        }
-        if (i < opcount - 1)
-            tag += ": ";
-    }
-    return tag;
-}
-
-const char *prettify(Ins ins) {
-    static char buf[512];
-    UINT32 opcount = ins.OpCount();
-    OPCODE opcode = ins.OpCode();
-    std::string tag = Tag(ins, opcount);
-    int n = snprintf(buf, sizeof(buf), "%-16lx%-36sOpCode: %4d \t %s\n", ins.Address(), ins.Name().c_str(), opcode, tag.c_str());
-    buf[n] = 0;
-    return buf;
-}
 
 void assert(bool a, const char *info=0) {
     if (!a) {
@@ -215,17 +182,57 @@ void assert(bool a, const char *info=0) {
 }
 
 
+const char *demangle(const char *name) {
+    if (!config::demangle) return name;
+    const static int maxsize = 256;
+    static char buf[maxsize];
+    int status;
+    char *realname = abi::__cxa_demangle(name, 0, 0, &status);
+    if (!status) {
+        int size = strlen(realname);
+        if (size > maxsize) size = maxsize;
+        memcpy(buf, realname, size);
+        free(realname);
+        return buf;
+    } else {
+        free(realname);
+        return name;
+    }
+}
+
+const char *displayRegs(CONTEXT *ctx) {
+    static char buf[512];
+    int n = 0;
+    n += sprintf(buf + n, "+--------------------------------------------------------------------------+\n");
+    n += sprintf(buf + n, " RAX = 0x%-16lx ",  PIN_GetContextReg(ctx, LEVEL_BASE::REG_RAX));
+    n += sprintf(buf + n, " RBX = 0x%-16lx ",  PIN_GetContextReg(ctx, LEVEL_BASE::REG_RBX));
+    n += sprintf(buf + n, " RCX = 0x%-16lx\n", PIN_GetContextReg(ctx, LEVEL_BASE::REG_RCX));
+    n += sprintf(buf + n, " RDX = 0x%-16lx ",  PIN_GetContextReg(ctx, LEVEL_BASE::REG_RDX));
+    n += sprintf(buf + n, " RDI = 0x%-16lx ",  PIN_GetContextReg(ctx, LEVEL_BASE::REG_RDI));
+    n += sprintf(buf + n, " RSI = 0x%-16lx\n", PIN_GetContextReg(ctx, LEVEL_BASE::REG_RSI));
+    n += sprintf(buf + n, " RBP = 0x%-16lx ",  PIN_GetContextReg(ctx, LEVEL_BASE::REG_RBP));
+    n += sprintf(buf + n, " RSP = 0x%-16lx ",  PIN_GetContextReg(ctx, LEVEL_BASE::REG_RSP));
+    n += sprintf(buf + n, " RIP = 0x%-16lx\n", PIN_GetContextReg(ctx, LEVEL_BASE::REG_RIP));
+    n += sprintf(buf + n, "+--------------------------------------------------------------------------+\n");
+    buf[n] = 0;
+    return buf;
+}
+
+
 } // end of namespace util
 
 
 namespace filter {
+
+const char *entry = "entry";
+const char *exit = "exit";
 
 bool read(int fd, uint64_t addr, size_t size) {
     bool ret = (fd <= 2 || fd > 10 || addr <= 0x100 || size <= 2 || size >= 1024) // default pass rule
         || (config::read_size_flag && (size < config::read_size_min || size > config::read_size_max))
         || (config::read_fd_flag && (fd < config::read_fd_min || fd > config::read_fd_max));
     if (ret) {
-        logger::verbose("filter read: fd: %d, addr: %lx, size: %lx\n", fd, addr, size);
+        logger::print("filter read: fd: %d, addr: %lx, size: %lx\n", fd, addr, size);
     }
     return ret;
 }
@@ -236,16 +243,39 @@ bool function(const char *name) {
 
     for (size_t i = 0; i < n; ++i) {
         if (strcmp(config::functions[i], name) == 0) {
-            logger::verbose("filter function: %s\n", name);
+            logger::print("filter function: %s\n", name);
             return true;
         }
     }
     return false;
 }
 
-bool point(const char *point) {
-    if (point == util::entry && !config::use_entry) return true;
-    if (point == util::exit && !config::use_exit) return true;
+
+bool libs(const std::string &name) {
+    size_t n = sizeof(config::libs) / sizeof(const char *);
+
+    for (size_t i = 0; i < n; ++i) {
+        if (name.find(config::libs[i]) != std::string::npos) {
+            logger::print("filter libs: %s\n", name.c_str());
+            return true;
+        }
+    }
+    return false;
+}
+
+
+bool taint_start() {
+    if (!config::use_interactive) return true;
+    static bool ret = false;
+    if (ret) return ret;
+    printf("taint start?[y/n]");
+    char c = getchar();
+    getchar(); // for \n
+    if (c == 'y') {
+        printf("taint start\n");
+        ret = true;
+        return true;
+    }
     return false;
 }
 

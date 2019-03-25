@@ -1,5 +1,5 @@
-#ifndef _WRAPPER_H
-#define _WRAPPER_H
+#ifndef _PIN_OBJECT_H
+#define _PIN_OBJECT_H
 
 #include "pin.H"
 
@@ -241,6 +241,38 @@ public:
 
     inline INS Next() {
         return INS_Next(ins);
+    }
+
+
+    std::string Tag(size_t opcount) {
+        std::string tag = "";
+        for (size_t i = 0; i < opcount; ++i) {
+            if (isOpReg(i)) {
+                tag += "Reg ";
+            }
+            if (isOpMem(i)) {
+                tag += "Mem ";
+            }
+            if (isOpImm(i)) {
+                tag += "Imm ";
+            }
+            if (isOpImplicit(i)) {
+                tag += "Implicit ";
+            }
+            if (i < opcount - 1)
+                tag += ": ";
+        }
+        return tag;
+    }
+
+    const char *prettify() {
+        static char buf[512];
+        UINT32 opcount = OpCount();
+        OPCODE opcode = OpCode();
+        std::string tag = Tag(opcount);
+        int n = snprintf(buf, sizeof(buf), "%-16lx%-36sOpCode: %4d \t %s\n", Address(), Name().c_str(), opcode, tag.c_str());
+        buf[n] = 0;
+        return buf;
     }
 };
 
